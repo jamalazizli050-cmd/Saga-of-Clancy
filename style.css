@@ -1,0 +1,620 @@
+:root {
+  --bg: #1b1e24;
+  --panel: #262b33;
+  --panel-border: #3a4150;
+  --text: #c7ccd6;
+  --text-dim: #838c9c;
+  --accent: #d1b13c;
+  --accent-dim: #8f7a2a;
+  --hp: #b2453f;
+  --danger: #7a2d2d;
+  --shard: #6fa3b8;
+  --shard-dim: #4a7688;
+  --prestige: #b58ac9;
+  --prestige-dim: #7d5e8c;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: #0e1013;
+  color: var(--text);
+  font-family: 'Courier New', Consolas, monospace;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Responsive frame: sized to whichever of width/height the viewport is
+   tighter on, aspect-ratio locked to the canvas's own 16:9 so #stage always
+   fills it exactly — no letterboxing/black bars on any monitor shape. */
+#viewport {
+  width: min(90vw, calc(90vh * 16 / 9));
+  aspect-ratio: 16 / 9;
+  max-width: 1920px;
+}
+
+#stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  box-shadow: 0 0 0 2px var(--panel-border), 0 20px 60px rgba(0,0,0,0.6);
+}
+
+canvas#game-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: #20242b;
+}
+
+/* DOM HUD/overlay layer. Authored at the same fixed logical size as the
+   canvas's internal draw space (see BASE_W/BASE_H in main.js) and scaled as
+   one unit to match #stage's actual displayed size, so every px value below
+   stays proportional to the game world at any screen size — see
+   fitToDisplaySize() in main.js, which sets the transform. */
+#overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: top left;
+}
+
+.hidden { display: none !important; }
+
+/* ---------- HUD ---------- */
+
+#hud {
+  position: absolute;
+  top: 15px;
+  left: 15px;
+  right: 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  pointer-events: none;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+}
+
+.bar-wrap {
+  position: relative;
+  width: 390px;
+  height: 27px;
+  background: rgba(0,0,0,0.5);
+  border: 1px solid var(--panel-border);
+}
+
+.bar-fill {
+  height: 100%;
+  width: 100%;
+  transition: width 0.15s ease-out;
+}
+
+.bar-fill.hp { background: var(--hp); }
+.bar-fill.boss { background: var(--accent-dim); }
+
+.bar-text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+}
+
+#gold-display, #weapon-display {
+  font-size: 20px;
+  color: var(--accent);
+}
+
+#shard-display {
+  font-size: 20px;
+  color: var(--shard);
+}
+
+#heir-display {
+  font-size: 16px;
+  color: var(--text-dim);
+}
+
+#equip-display {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 15px;
+  color: var(--text-dim);
+}
+
+.equip-line span {
+  color: var(--text);
+}
+
+.hint { color: var(--text-dim); font-size: 16px; }
+
+#boss-bar-wrap {
+  width: 600px;
+  margin-top: 15px;
+}
+
+#boss-name-label {
+  font-size: 18px;
+  color: var(--text-dim);
+  margin-bottom: 3px;
+}
+
+/* ---------- fear mechanic overlay ---------- */
+
+#smoke-overlay {
+  position: absolute;
+  top: 21px;
+  left: 50%;
+  transform: translateX(-50%);
+  pointer-events: none;
+  color: var(--accent);
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid var(--accent-dim);
+  padding: 6px 18px;
+  font-size: 18px;
+  letter-spacing: 1.5px;
+}
+
+/* ---------- Screens (death / victory) ---------- */
+
+.screen {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, #14161b, #1b1e24);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 21px;
+  z-index: 10;
+}
+
+.screen h1 {
+  letter-spacing: 12px;
+  color: var(--accent);
+  margin: 0;
+  font-size: 63px;
+}
+
+.screen .subtitle {
+  color: var(--text-dim);
+  margin: 0 0 15px 0;
+  font-style: italic;
+  font-size: 18px;
+}
+
+/* ---------- Title screen ---------- */
+/* Overrides .screen's opaque gradient with a semi-transparent one — the
+   canvas keeps rendering a static biome backdrop behind this the whole
+   time Game.state === 'title' (see main.js), so this reads as a dim/
+   vignetted view of that scene rather than a flat black panel. */
+
+.title-screen {
+  background: linear-gradient(180deg, rgba(18, 20, 25, 0.6), rgba(14, 16, 20, 0.88));
+  gap: 15px;
+}
+
+.title-logo-wrap {
+  max-width: 220px;
+}
+
+.title-logo {
+  display: block;
+  width: 100%;
+  max-width: 220px;
+  height: auto;
+}
+
+.title-heading {
+  letter-spacing: 10px;
+  color: var(--accent);
+  margin: 0;
+  font-size: 54px;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.8);
+}
+
+.title-save-summary {
+  display: flex;
+  gap: 24px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--panel-border);
+  padding: 12px 24px;
+}
+
+.title-buttons {
+  display: flex;
+  gap: 18px;
+  margin-top: 6px;
+}
+
+.title-version {
+  position: absolute;
+  right: 18px;
+  bottom: 14px;
+  color: var(--text-dim);
+  font-size: 13px;
+  opacity: 0.7;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  padding: 30px 45px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 480px;
+}
+
+.stat-line { color: var(--text); font-size: 21px; }
+.stat-line span { color: var(--accent); }
+
+.btn {
+  background: #2f3540;
+  border: 1px solid var(--panel-border);
+  color: var(--text);
+  padding: 15px 24px;
+  font-family: inherit;
+  font-size: 21px;
+  cursor: pointer;
+}
+
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.btn-primary {
+  background: var(--accent-dim);
+  color: #1b1e24;
+  font-weight: bold;
+}
+
+.btn-primary:hover { color: #000; }
+
+.btn-small {
+  padding: 9px 15px;
+  font-size: 18px;
+}
+
+.shard-stat span { color: var(--shard); }
+.prestige-stat, .prestige-stat span { color: var(--prestige); }
+
+#prestige-display {
+  font-size: 20px;
+  color: var(--prestige);
+}
+
+.btn-prestige { border-color: var(--prestige-dim); }
+.btn-prestige:hover { border-color: var(--prestige); color: var(--prestige); }
+
+.obelisk-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.obelisk-desc {
+  font-size: 14px;
+  color: var(--text-dim);
+  max-width: 420px;
+}
+
+.btn-shard {
+  border-color: var(--shard-dim);
+}
+
+.btn-shard:hover { border-color: var(--shard); color: var(--shard); }
+
+.panel-divider {
+  height: 1px;
+  background: var(--panel-border);
+  margin: 3px 0;
+}
+
+/* ---------- Heir selection (death screen) ---------- */
+
+.heir-choices {
+  display: flex;
+  gap: 18px;
+}
+
+.heir-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 165px;
+}
+
+.heir-name {
+  color: var(--accent);
+  font-weight: bold;
+  font-size: 21px;
+}
+
+.heir-stats {
+  color: var(--text-dim);
+  font-size: 15px;
+}
+
+.heir-portrait {
+  width: 84px;
+  height: 120px;
+  object-fit: contain;
+  /* Source images vary in native aspect ratio (bespoke per-design art) —
+     contain instead of cover so no candidate gets cropped oddly. */
+  image-rendering: pixelated;
+}
+
+/* ---------- Hub scene overlays (positioned over in-canvas world coords) ---------- */
+
+.floating-panel {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  background: var(--panel);
+  border: 1px solid var(--accent-dim);
+  padding: 15px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 270px;
+  box-shadow: 0 9px 27px rgba(0,0,0,0.5);
+  z-index: 5;
+  /* Bottom-anchored (grows upward from `top`) — the Улучшения panel now
+     stacks permanent + prestige rows and can get taller than the canvas
+     itself. Cap it and scroll instead of overflowing off the top edge. */
+  max-height: 440px;
+  overflow-y: auto;
+}
+
+.panel-title {
+  color: var(--accent);
+  font-size: 20px;
+  letter-spacing: 1.5px;
+}
+
+/* "Разовое" vs "Постоянное" — the hub-reorg's one-line distinction between
+   the merchant's per-life stock and the Улучшения panel's permanent tree. */
+.panel-subtitle {
+  color: var(--text-dim);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 4px;
+}
+
+.floating-prompt {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid var(--accent-dim);
+  color: var(--accent);
+  padding: 6px 15px;
+  font-size: 18px;
+  letter-spacing: 1.5px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 5;
+}
+
+#hub-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  color: var(--text-dim);
+  font-size: 16px;
+  background: rgba(0, 0, 0, 0.4);
+  padding: 6px 15px;
+  pointer-events: none;
+}
+
+/* ---------- Inventory / scrapper modals ---------- */
+/* Full-screen dim backdrop over the (frozen but still visible) game world —
+   same idea as .screen, but translucent instead of opaque since the point
+   is pausing, not transitioning away from the world underneath. */
+
+.modal-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 11, 14, 0.78);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 12;
+}
+
+.modal-panel {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  padding: 24px 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  min-width: 600px;
+  max-width: 840px;
+  max-height: 500px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+}
+
+.equip-slot-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.equip-slot-cell {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 15px;
+  padding: 9px 12px;
+  text-align: left;
+}
+
+.equip-slot-filled { border-color: var(--accent-dim); color: var(--text); }
+.equip-slot-empty { color: var(--text-dim); }
+
+.item-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 9px;
+  overflow-y: auto;
+  max-height: 300px;
+  padding-right: 4px;
+}
+
+.item-grid-empty {
+  color: var(--text-dim);
+  font-size: 15px;
+  font-style: italic;
+  grid-column: 1 / -1;
+}
+
+.item-cell {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 9px;
+  padding: 9px;
+  font-size: 13px;
+  text-align: left;
+}
+
+/* Procedural silhouette icon (see icons.js) — replaces the old flat color
+   swatch, which carried no shape information about what the item actually
+   was. `color` is the ONLY thing that changes for rarity (see
+   .item-icon-rare below); the SVG itself always fills with currentColor. */
+.item-icon {
+  width: 48px;
+  height: 48px;
+  min-width: 48px;
+  background: #1b1e24;
+  border: 1px solid var(--panel-border);
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.item-icon-svg {
+  width: 34px;
+  height: 34px;
+  fill: currentColor;
+}
+
+/* Smaller variant for the equipped-slot row (see setInventoryPanel) —
+   those cells already carry a text label next to the icon, so the icon
+   itself only needs to be a quick visual anchor, not the main content. */
+.item-icon-sm {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+}
+
+.item-icon-sm .item-icon-svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* Rarity readout on the icon itself — same threshold Game.isRareItem()
+   already uses (itemQuality()/weaponScore(), top ~15-20% of rolls), and the
+   same purple "prestige" family .item-cell-rare below already established
+   as this app's one color for "this is a good roll", so the icon doesn't
+   introduce a second competing rarity color. */
+.item-icon-rare {
+  color: var(--prestige);
+  border-color: var(--prestige-dim);
+  box-shadow: 0 0 8px rgba(181, 138, 201, 0.35);
+}
+
+.item-cell-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.item-name { color: var(--text); font-size: 14px; }
+.item-extra { color: var(--text-dim); font-size: 12px; }
+
+.item-cell-rare { border-color: var(--prestige-dim); }
+.item-cell-rare:hover { border-color: var(--prestige); }
+.item-cell-rare .item-extra { color: var(--prestige); }
+
+/* ---------- Pause menu / Chronicle / Credits ---------- */
+
+.pause-panel {
+  min-width: 340px;
+  align-items: stretch;
+}
+
+.pause-panel .btn {
+  text-align: center;
+}
+
+.pause-settings-panel {
+  color: var(--text-dim);
+  font-size: 14px;
+  font-style: italic;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--panel-border);
+  padding: 12px 15px;
+}
+
+#chronicle-content, .credits-list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.chronicle-row {
+  color: var(--text);
+  font-size: 16px;
+}
+
+.chronicle-row span { color: var(--accent); }
+
+.chronicle-ancestors-title {
+  color: var(--text-dim);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-top: 6px;
+}
+
+.chronicle-ancestor {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.chronicle-ancestor span { color: var(--prestige); }
+
+.chronicle-empty {
+  color: var(--text-dim);
+  font-style: italic;
+  font-size: 14px;
+}
+
+.credits-intro {
+  color: var(--text-dim);
+  font-size: 14px;
+  margin-bottom: 3px;
+}
+
+.credits-entry {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.credits-entry strong { color: var(--accent); }
