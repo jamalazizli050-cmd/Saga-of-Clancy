@@ -1,6 +1,11 @@
 // Keyboard state. `justPressed` fires exactly once per keydown so actions like
 // jump/dash/attack/weapon-switch don't repeat while the key is held.
 
+// MouseEvent.button -> the synthetic key code it's stored under. Button 1
+// (middle) is deliberately absent: nothing binds it, and claiming it would
+// only break autoscroll for no gain.
+const MOUSE_BUTTON_CODES = { 0: 'Mouse0', 2: 'Mouse2' };
+
 const Input = {
   keys: {},
   justPressed: {},
@@ -21,18 +26,25 @@ const Input = {
       this.keys = {};
     });
 
-    // Left mouse button is tracked as a synthetic "key" (code 'Mouse0') so
-    // it can trigger the same wasPressed-gated actions as a keyboard key —
-    // used as an alternate attack input alongside KeyJ.
+    // Mouse buttons are tracked as synthetic "keys" ('Mouse0' left, 'Mouse2'
+    // right) so they trigger the same wasPressed-gated actions a keyboard key
+    // does. Left is melee attack (alongside KeyJ), right fires the bow — see
+    // Player.update()'s two independent attack blocks.
     window.addEventListener('mousedown', (e) => {
-      if (e.button !== 0) return;
-      if (!this.keys.Mouse0) this.justPressed.Mouse0 = true;
-      this.keys.Mouse0 = true;
+      const code = MOUSE_BUTTON_CODES[e.button];
+      if (!code) return;
+      if (!this.keys[code]) this.justPressed[code] = true;
+      this.keys[code] = true;
     });
     window.addEventListener('mouseup', (e) => {
-      if (e.button !== 0) return;
-      this.keys.Mouse0 = false;
+      const code = MOUSE_BUTTON_CODES[e.button];
+      if (!code) return;
+      this.keys[code] = false;
     });
+    // Right-click is a game action, so the browser's own context menu must
+    // never open on it — without this, every bow shot pops the menu over the
+    // canvas and swallows the following clicks.
+    window.addEventListener('contextmenu', (e) => e.preventDefault());
   },
 
   isDown(code) {

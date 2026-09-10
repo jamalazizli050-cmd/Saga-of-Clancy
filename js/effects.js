@@ -44,6 +44,28 @@ const Effects = {
     }
   },
 
+  // A spray with shake but deliberately NO hit-stop — for things that are
+  // good news (a reward paid out, a wave arriving) rather than an impact.
+  // Freezing the frame is the game's punctuation for "that connected", so
+  // reusing hit() here would make picking up gold feel like taking a hit.
+  burst(x, y, color, count = 14, shake = 5 * WORLD_SCALE) {
+    this.shakeTimer = Math.max(this.shakeTimer, 0.16);
+    this.shakeMag = Math.max(this.shakeMag, shake);
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = (70 + Math.random() * 190) * WORLD_SCALE;
+      this.particles.push({
+        x, y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: 0.3 + Math.random() * 0.3,
+        maxLife: 0.6,
+        size: (1.5 + Math.random() * 2.5) * WORLD_SCALE,
+        color: color || '#d1b13c',
+      });
+    }
+  },
+
   update(rawDt) {
     if (this.hitStopTimer > 0) this.hitStopTimer = Math.max(0, this.hitStopTimer - rawDt);
     if (this.shakeTimer > 0) {

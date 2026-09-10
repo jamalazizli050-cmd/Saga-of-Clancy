@@ -33,6 +33,12 @@ const ATTACK_SWING_DURATION_MAX = 0.22; // s, slowest weapon
 const ATTACK_SWING_ARC_MIN = 60 * (Math.PI / 180); // fastest weapon: a quick flick
 const ATTACK_SWING_ARC_MAX = 150 * (Math.PI / 180); // slowest weapon: a wide haymaker
 
+// Arrows are the one consumable resource in the game — every other action is
+// gated purely by its own cooldown. Enough to matter from the first room
+// without turning the bow into the default answer to everything; chests top
+// it back up (see CHEST_ARROW_* in chest.js).
+const STARTING_ARROWS = 10;
+
 function weaponSwingProfile(w) {
   const heavyT = clamp((w.cooldown - WEAPON_COOLDOWN_MIN) / (WEAPON_COOLDOWN_MAX - WEAPON_COOLDOWN_MIN), 0, 1);
   return {
@@ -49,7 +55,7 @@ class Player {
   // Chosen once at heir-selection time and never re-rolled, so it's just
   // carried through the constructor like every other "who is this
   // character" value (maxHp, speedMul) rather than recomputed anywhere.
-  constructor(x, y, maxHp, speedMul = 1, cooldownMul = 1, accessorySlotCount = BASE_ACCESSORY_SLOT_COUNT, skinId = null) {
+  constructor(x, y, maxHp, speedMul = 1, cooldownMul = 1, accessorySlotCount = BASE_ACCESSORY_SLOT_COUNT, skinId = null, archetype = null) {
     this.x = x;
     this.y = y;
     this.w = 28 * WORLD_SCALE;
@@ -59,6 +65,13 @@ class Player {
     this.grounded = false;
     this.facing = 1;
     this.skinId = skinId;
+    // The active heir's archetype key (see heirs.js's HEIR_ARCHETYPES), or
+    // null for the plain baseline profile. Read by this class's own dash/
+    // takeDamage/heal below, and by main.js's resolveAttack() for the
+    // melee/bow/execute hooks — never by anything in boss.js, which is what
+    // keeps MirrorBoss's numeric-only player snapshot honest (see
+    // Game.enterMirrorFight()'s comment).
+    this.archetype = archetype;
     this.anim = new SpriteAnimator();
 
     // "base" values come from the heir profile + permanent hub upgrades;
@@ -104,9 +117,28 @@ class Player {
     // always resets cleanly.
     this.weapons = [STARTING_WEAPON];
 
+    // The ranged slot: its own owned-list + active index, entirely parallel
+    // to weapons/weaponIndex above and NOT competing with it. Both a melee
+    // weapon and a bow are equipped at once — left mouse swings one, right
+    // mouse fires the other, each on its own cooldown timer.
+    this.bowIndex = 0;
+    this.bows = [STARTING_BOW];
+    this.arrows = STARTING_ARROWS;
+    this.bowCooldownTimer = 0;
+    // Bow-draw pose visual, the ranged counterpart to attackActiveTimer.
+    // Separate so a shot and a swing can be mid-animation simultaneously —
+    // sharing one timer made whichever fired second cut the other's pose off.
+    this.bowDrawTimer = 0;
+    this.bowDrawDuration = 0;
+
     // Set for exactly the frame an attack is triggered; game.js reads it
     // to resolve damage against enemies, then it's consumed.
     this.pendingHitbox = null;
+    // Same one-frame handoff as pendingHitbox above, but for the bow's shot —
+    // main.js turns this into an actual Arrow (see projectile.js) and pushes
+    // it into Game.projectiles. Both can now be set on the same frame: the
+    // two weapons are independent actions on independent cooldowns.
+    this.pendingProjectile = null;
   }
 
   get weapon() {
@@ -115,6 +147,10 @@ class Player {
     // failure surfaced as a TypeError deep inside render() rather than
     // anywhere near the cause — a graceful degrade is worth the one line.
     return this.weapons[this.weaponIndex] || this.weapons[0];
+  }
+
+  get bow() {
+    return this.bows[this.bowIndex] || this.bows[0];
   }
 
   get isDashing() {
@@ -156,15 +192,18 @@ class Player {
   }
 
   // Which accessory slot a piece of gear should land in when there's no
-  // explicit target: the first empty one, or (all full) the weakest-scoring
-  // occupant. Shared by the auto-equip convenience path and by the
-  // inventory screen's "equip this" click when it's an accessory, since
-  // both need the same "which slot" decision.
+  // explicit target: the first empty one, or (all full) the occupant
+  // contributing least to damage/mitigation — the same two axes auto-equip
+  // judges on (see isCombatUpgrade), so a candidate is always measured
+  // against the piece it's most likely to legitimately beat. Shared by the
+  // auto-equip convenience path and by the inventory screen's "equip this"
+  // click when it's an accessory, since both need the same "which slot"
+  // decision.
   pickAccessoryTargetSlot() {
     const emptySlot = this.accessorySlots.find((slot) => !this.equipment[slot]);
     if (emptySlot) return emptySlot;
     return this.accessorySlots.reduce((worst, slot) =>
-      itemScore(this.equipment[slot]) < itemScore(this.equipment[worst]) ? slot : worst, this.accessorySlots[0]);
+      combatValue(this.equipment[slot]) < combatValue(this.equipment[worst]) ? slot : worst, this.accessorySlots[0]);
   }
 
   // Core equip primitive: item MUST currently be in gearInventory (both the
@@ -194,19 +233,12 @@ class Player {
   }
 
   // Convenience-only pass, used right after receiveGear() stores the item.
-  // Equips it ONLY if it's an actual upgrade over what's worn — but unlike
-  // the old equipItem(), failing that check is a no-op on an item that's
-  // already safely sitting in gearInventory, never a loss.
+  // Equips it only if it beats what's worn on damage or on incoming-damage
+  // mitigation (see isCombatUpgrade) — failing that check is a no-op on an
+  // item that's already safely sitting in gearInventory, never a loss.
   autoEquipIfBetter(item) {
-    if (item.slotType === 'accessory') {
-      const slot = this.pickAccessoryTargetSlot();
-      const current = this.equipment[slot];
-      if (!current || itemScore(item) > itemScore(current)) this.equipFromInventory(item, slot);
-      return;
-    }
-    const slot = item.slotType; // 'helm' | 'chest'
-    const current = this.equipment[slot];
-    if (!current || itemScore(item) > itemScore(current)) this.equipFromInventory(item, slot);
+    const slot = item.slotType === 'accessory' ? this.pickAccessoryTargetSlot() : item.slotType;
+    if (isCombatUpgrade(item, this.equipment[slot])) this.equipFromInventory(item, slot);
   }
 
   // Every piece of found armor/accessory gear MUST come through here (chests,
@@ -227,48 +259,76 @@ class Player {
     return this.equipFromInventory(item, resolvedSlot);
   }
 
+  // Which owned-list a given weapon belongs to. Bows and melee weapons are
+  // the same KIND of item everywhere else (same generator, same budget, same
+  // describeWeaponFull/weaponScore/isRareWeapon, same inventory cell) — they
+  // differ only in which slot holds them, so every list-touching method below
+  // routes through this one check rather than duplicating the pair of paths.
+  weaponListFor(weapon) {
+    return isRangedWeapon(weapon) ? this.bows : this.weapons;
+  }
+
+  activeIndexFor(weapon) {
+    return isRangedWeapon(weapon) ? this.bowIndex : this.weaponIndex;
+  }
+
   // Inventory-screen click on an owned-but-inactive weapon: just switches to
-  // it (same effect as the in-run Q cycle) — the previously active weapon
+  // it (same effect as the in-run Q / B cycle) — the previously active one
   // stays owned and simply becomes the "unequipped" one, so it reappears in
-  // unequippedItems() with nothing to lose or restore.
+  // unequippedItems() with nothing to lose or restore. A bow lands in the bow
+  // slot, a melee weapon in the melee slot; neither can displace the other.
   manualEquipWeapon(weapon) {
-    const idx = this.weapons.indexOf(weapon);
+    const idx = this.weaponListFor(weapon).indexOf(weapon);
     if (idx === -1) return false;
-    this.weaponIndex = idx;
+    if (isRangedWeapon(weapon)) this.bowIndex = idx;
+    else this.weaponIndex = idx;
     return true;
   }
 
-  // Adds a weapon to the owned list (deduped by id) and equips it, so
-  // finding new gear from a chest feels immediate. No-op if already owned.
+  // Adds a weapon to the owned list for its own slot (deduped by id) and
+  // equips it, so finding new gear from a chest feels immediate. No-op if
+  // already owned.
   unlockWeapon(weapon) {
-    if (this.weapons.some((w) => w.id === weapon.id)) return false;
-    this.weapons.push(weapon);
-    this.weaponIndex = this.weapons.length - 1;
+    const list = this.weaponListFor(weapon);
+    if (list.some((w) => w.id === weapon.id)) return false;
+    list.push(weapon);
+    if (isRangedWeapon(weapon)) this.bowIndex = list.length - 1;
+    else this.weaponIndex = list.length - 1;
     return true;
   }
 
   // Everything the inventory screen's grid and the scrapper's sell list both
-  // need: every owned weapon that ISN'T the currently active one, plus every
-  // piece of gear in gearInventory — tagged so callers can tell them apart
-  // without caring how each is stored internally.
+  // need: every owned weapon and bow that ISN'T the active one for its slot,
+  // plus every piece of gear in gearInventory — tagged so callers can tell
+  // them apart without caring how each is stored internally. Bows are tagged
+  // 'weapon' like any other weapon; only the slot routing above cares.
   unequippedItems() {
     const items = [];
     this.weapons.forEach((weapon, i) => {
       if (i !== this.weaponIndex) items.push({ kind: 'weapon', item: weapon });
+    });
+    this.bows.forEach((bow, i) => {
+      if (i !== this.bowIndex) items.push({ kind: 'weapon', item: bow });
     });
     for (const item of this.gearInventory) items.push({ kind: 'gear', item });
     return items;
   }
 
   // Permanent removal for the scrapper (Game.scrapItem) — entry must be one
-  // returned by unequippedItems(), i.e. never the active weapon or anything
-  // currently worn.
+  // returned by unequippedItems(), i.e. never an active weapon/bow or
+  // anything currently worn.
   removeUnequippedItem(entry) {
     if (entry.kind === 'weapon') {
-      const idx = this.weapons.indexOf(entry.item);
-      if (idx === -1 || idx === this.weaponIndex) return false;
-      this.weapons.splice(idx, 1);
-      if (idx < this.weaponIndex) this.weaponIndex -= 1;
+      const ranged = isRangedWeapon(entry.item);
+      const list = this.weaponListFor(entry.item);
+      const activeIdx = this.activeIndexFor(entry.item);
+      const idx = list.indexOf(entry.item);
+      if (idx === -1 || idx === activeIdx) return false;
+      list.splice(idx, 1);
+      if (idx < activeIdx) {
+        if (ranged) this.bowIndex -= 1;
+        else this.weaponIndex -= 1;
+      }
       return true;
     }
     const idx = this.gearInventory.indexOf(entry.item);
@@ -279,13 +339,16 @@ class Player {
 
   update(dt, room, canAttack) {
     this.pendingHitbox = null;
+    this.pendingProjectile = null;
 
     // --- timers ---
     this.jumpCooldownTimer = Math.max(0, this.jumpCooldownTimer - dt);
     this.dashCooldownTimer = Math.max(0, this.dashCooldownTimer - dt);
     this.attackCooldownTimer = Math.max(0, this.attackCooldownTimer - dt);
+    this.bowCooldownTimer = Math.max(0, this.bowCooldownTimer - dt);
     this.invulnTimer = Math.max(0, this.invulnTimer - dt);
     if (this.attackActiveTimer > 0) this.attackActiveTimer -= dt;
+    if (this.bowDrawTimer > 0) this.bowDrawTimer -= dt;
     if (this.dashTimer > 0) this.dashTimer -= dt;
     if (this.knockbackTimer > 0) this.knockbackTimer -= dt;
 
@@ -295,6 +358,11 @@ class Player {
     else if (Input.wasPressed('Digit2') && this.weapons.length > 1) this.weaponIndex = 1;
     else if (Input.wasPressed('Digit3') && this.weapons.length > 2) this.weaponIndex = 2;
     else if (Input.wasPressed('KeyQ')) this.weaponIndex = (this.weaponIndex + 1) % this.weapons.length;
+
+    // Bow slot cycles on its own key — a separate statement, not part of the
+    // chain above, because it's a separate slot: switching bows must never
+    // also consume a melee-switch press.
+    if (Input.wasPressed('KeyB')) this.bowIndex = (this.bowIndex + 1) % this.bows.length;
 
     // --- horizontal movement ---
     if (this.knockbackTimer > 0) {
@@ -322,11 +390,21 @@ class Player {
     // --- dash ---
     if (Input.wasPressedAny(['ShiftLeft', 'ShiftRight', 'KeyK']) && this.dashCooldownTimer <= 0 && !this.isDashing) {
       this.dashTimer = DASH_DURATION;
-      this.dashCooldownTimer = DASH_COOLDOWN * this.cooldownMul;
+      // Runner: a shorter leash on the one button that gets you out of
+      // danger, so dashing more often is a real option, not just a slightly
+      // faster jog.
+      const dashCdMul = this.archetype === 'runner' ? RUNNER_DASH_COOLDOWN_MUL : 1;
+      this.dashCooldownTimer = DASH_COOLDOWN * this.cooldownMul * dashCdMul;
       this.vy = 0;
+      // Runner: the dash itself becomes a brief dodge — a window to dash
+      // INTO/THROUGH a telegraphed hit (Reysdro's committed side, Vetomo's
+      // counter, Sakarver's lunge, Keons mid-chase) instead of only ever
+      // using it to close/open distance. Layered on top of whatever
+      // post-hit invulnerability is already running, never shortening it.
+      if (this.archetype === 'runner') this.invulnTimer = Math.max(this.invulnTimer, RUNNER_DASH_IFRAME);
     }
 
-    // --- attack (keyboard J or left mouse button — same cooldown/hitbox either way) ---
+    // --- melee attack (keyboard J or LEFT mouse button) ---
     if (canAttack && Input.wasPressedAny(['KeyJ', 'Mouse0']) && this.attackCooldownTimer <= 0) {
       const w = this.weapon;
       this.attackCooldownTimer = w.cooldown * this.cooldownMul;
@@ -335,6 +413,32 @@ class Player {
       this.attackActiveTimer = swing.duration;
       this.attackSwingArc = swing.arc;
       this.pendingHitbox = computeMeleeHitbox(this, w.range, w.damage);
+    }
+
+    // --- bow shot (RIGHT mouse button) ---
+    // Entirely independent of the melee block above: its own cooldown timer,
+    // its own weapon, its own pose timer. The two can be alternated freely,
+    // and neither one's cooldown blocks the other. Costs one arrow — the only
+    // consumable in the game, so unlike every other action this can be
+    // "ready" and still do nothing.
+    if (canAttack && Input.wasPressed('Mouse2') && this.bowCooldownTimer <= 0 && this.arrows > 0) {
+      const b = this.bow;
+      this.arrows -= 1;
+      this.bowCooldownTimer = b.cooldown * this.cooldownMul;
+      const draw = weaponSwingProfile(b);
+      this.bowDrawDuration = draw.duration;
+      this.bowDrawTimer = draw.duration;
+      // `range` doesn't cap flight distance (see projectile.js) — it scales
+      // the arrow's speed, and the arrow then flies under gravity until it
+      // lands or hits something. Fired from roughly bow-hand height/depth on
+      // the player's sprite, the same anchor computeMeleeHitbox uses for its
+      // own facing-dependent x.
+      const spawnX = this.facing > 0 ? this.x + this.w : this.x - 4 * WORLD_SCALE;
+      // Upper chest rather than mid-body: it's where a drawn bow actually
+      // sits, and the few extra units of clearance above the floor measurably
+      // extend the shot before its arc grounds it.
+      const spawnY = this.y + this.h * 0.32;
+      this.pendingProjectile = { x: spawnX, y: spawnY, facing: this.facing, damage: b.damage, range: b.range, color: b.color };
     }
 
     stepPhysics(this, dt, room);
@@ -349,7 +453,12 @@ class Player {
     if (this.invulnTimer > 0) return;
     // Armour/accessory mitigation. Capped in recomputeEquipmentMods(), so
     // this can never reach or exceed 1 and zero out incoming damage.
-    const mitigated = amount * (1 - this.equipMods.damageReduction);
+    // Survivor's flat bonus mitigation is applied AFTER that (multiplicative,
+    // not added to the same pool) — it never needs its own cap: stacked with
+    // the gear cap's worst case (55%), total mitigation still tops out well
+    // under 100%, so this can never make the player unkillable.
+    const survivorMul = this.archetype === 'survivor' ? 1 - SURVIVOR_DAMAGE_REDUCTION : 1;
+    const mitigated = amount * (1 - this.equipMods.damageReduction) * survivorMul;
     this.hp = Math.max(0, this.hp - mitigated);
     this.invulnTimer = HIT_INVULN_DURATION;
 
@@ -358,6 +467,19 @@ class Player {
     this.knockbackVx = dir * PLAYER_KNOCKBACK_FORCE;
     this.knockbackTimer = PLAYER_KNOCKBACK_DURATION;
     this.vy = Math.min(this.vy, -PLAYER_KNOCKBACK_HOP);
+  }
+
+  // The ONE path every heal in the game routes through (bandage, hub rest,
+  // the treasure room's "heal" pick — see their call sites in game.js) so
+  // Survivor's penalty lives in exactly one place instead of three. Returns
+  // the actual HP gained (post-multiplier, post-ceiling-clamp) so callers
+  // that report a number to the player show the real one, not the nominal
+  // amount requested.
+  heal(amount) {
+    const survivorMul = this.archetype === 'survivor' ? SURVIVOR_HEAL_MUL : 1;
+    const before = this.hp;
+    this.hp = Math.min(this.maxHp, this.hp + amount * survivorMul);
+    return Math.round(this.hp - before);
   }
 
   // The original procedural look — still what draws whenever there's no
@@ -427,25 +549,55 @@ class Player {
 
     ctx.globalAlpha = 1;
 
-    // Swing arc: a rotating blade sweeping from a raised wind-up to an
-    // extended finish, with a filled wedge trailing behind it to sell the
-    // motion — replaces the old static "flash rectangle" (which read as a
-    // hitbox indicator, not a strike). Duration/arc come from
-    // weaponSwingProfile() at the moment the attack was triggered (see
-    // update()): fast weapons sweep a short arc quickly, slow ones sweep a
-    // wide arc slowly. Purely visual — computeMeleeHitbox's rectangle is
-    // still what actually resolves damage, unrelated to this angle.
+    const dir = this.facing;
+    const pivotX = dir > 0 ? sx + this.w * 0.72 : sx + this.w * 0.28;
+    const pivotY = this.y + this.h * 0.42;
+
+    // Bowstring recoil, on its OWN timer (bowDrawTimer) rather than the melee
+    // swing's — the two weapons fire independently now, so both poses can be
+    // on screen at once and neither may cut the other short. A rotating blade
+    // sweep wouldn't suit a bow anyway: it fires instantly on press (no
+    // charge-up), so the string reads as pulled back at release (t=0) easing
+    // forward to rest (t=1). Purely visual — the Arrow's own travel is what
+    // resolves damage.
+    if (this.bowDrawTimer > 0) {
+      const b = this.bow;
+      const t = clamp(1 - this.bowDrawTimer / this.bowDrawDuration, 0, 1);
+      const bowHeight = this.h * 0.85;
+      const bowBulge = 8 * WORLD_SCALE * dir;
+      const pullback = (1 - t) * 14 * WORLD_SCALE;
+
+      ctx.save();
+      ctx.translate(pivotX, pivotY);
+      ctx.strokeStyle = b.color;
+      ctx.lineCap = 'round';
+
+      ctx.lineWidth = 3 * WORLD_SCALE;
+      ctx.beginPath();
+      ctx.moveTo(0, -bowHeight / 2);
+      ctx.quadraticCurveTo(bowBulge, 0, 0, bowHeight / 2);
+      ctx.stroke();
+
+      ctx.lineWidth = 1.5 * WORLD_SCALE;
+      ctx.beginPath();
+      ctx.moveTo(0, -bowHeight / 2);
+      ctx.lineTo(-dir * pullback, 0);
+      ctx.lineTo(0, bowHeight / 2);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    // Melee swing arc, driven by attackActiveTimer/Duration from
+    // weaponSwingProfile() — fast weapons resolve quickly, slow ones linger.
     if (this.attackActiveTimer > 0) {
       const w = this.weapon;
-      const dir = this.facing;
       const t = clamp(1 - this.attackActiveTimer / this.attackActiveDuration, 0, 1);
       const arc = this.attackSwingArc;
       const localStart = -arc / 2;
       const localCur = localStart + arc * t;
       const absStart = dir > 0 ? localStart : Math.PI - localStart;
       const absCur = dir > 0 ? localCur : Math.PI - localCur;
-      const pivotX = dir > 0 ? sx + this.w * 0.72 : sx + this.w * 0.28;
-      const pivotY = this.y + this.h * 0.42;
 
       ctx.save();
       ctx.translate(pivotX, pivotY);

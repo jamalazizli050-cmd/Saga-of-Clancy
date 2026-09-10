@@ -64,6 +64,32 @@ const WEAPON_ICONS = {
     <line x1="12" y1="42" x2="30" y2="8" stroke="currentColor" stroke-width="5" stroke-linecap="round" />
     <path d="M 27 11 A 11 11 0 1 1 38 22" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" />
   `,
+  // Bow: a curved limb (the same "thick stroke arc" technique серп/коса
+  // use) plus a straight string between its tips and a nocked-arrow line
+  // through the middle — the one ranged weapon, so it's the one silhouette
+  // in this set with a horizontal element crossing through it.
+  // Bow: a curved limb with a straight string behind it and the nocked
+  // arrow crossing both.
+  'лук': `
+    <path d="M 14 6 Q 34 24 14 42" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" />
+    <line x1="14" y1="6" x2="14" y2="42" stroke="currentColor" stroke-width="2" />
+    <line x1="9" y1="24" x2="36" y2="24" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
+  `,
+  // Crossbow: the defining silhouette is the T — a horizontal bow limb
+  // across a long stock — which reads completely differently from лук's
+  // vertical curve at icon size, so the two are never confused.
+  'арбалет': `
+    <path d="M 6 14 Q 24 26 42 14" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" />
+    <line x1="6" y1="14" x2="42" y2="14" stroke="currentColor" stroke-width="2" />
+    <rect x="21" y="8" width="6" height="34" rx="2" />
+  `,
+  // Slurbow/self-shooter: a crossbow stock with a boxy magazine on top,
+  // distinct from арбалет's bare limb.
+  'самострел': `
+    <path d="M 8 16 Q 24 26 40 16" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
+    <rect x="20" y="10" width="8" height="32" rx="2" />
+    <rect x="16" y="6" width="16" height="9" rx="2" />
+  `,
 };
 
 const ARMOR_ICONS = {

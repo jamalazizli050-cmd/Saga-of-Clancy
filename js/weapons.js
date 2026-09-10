@@ -55,7 +55,15 @@ const WEAPON_COLOR_BY_AXIS = {
 const ADJ_NEUTRAL = ['Ржавый', 'Зазубренный', 'Костяной', 'Обугленный', 'Мрачный', 'Погнутый', 'Треснутый'];
 const ADJ_HEAVY = ['Тяжёлый', 'Массивный', 'Грузный', 'Громоздкий'];
 const ADJ_LIGHT = ['Быстрый', 'Лёгкий', 'Проворный', 'Гибкий'];
-const WEAPON_NOUNS = ['тесак', 'серп', 'молот', 'кинжал', 'топор', 'коса'];
+// Two separate name pools, because melee weapons and bows are now separate
+// equipment slots (see Player's `weapons` / `bows`) rather than competing
+// for one. generateWeapon(kind) picks the pool AND the resulting `type` off
+// the same argument, so the two can never disagree. Adding another noun to
+// either pool is one line here plus one WEAPON_ICONS entry, nothing else.
+const MELEE_WEAPON_NOUNS = ['тесак', 'серп', 'молот', 'кинжал', 'топор', 'коса'];
+const RANGED_WEAPON_NOUNS = ['лук', 'арбалет', 'самострел'];
+// Union, for anything that needs "every noun that exists" (icon coverage).
+const WEAPON_NOUNS = [...MELEE_WEAPON_NOUNS, ...RANGED_WEAPON_NOUNS];
 
 // Soft bias, not a hard rule: neutral adjectives are always in the running,
 // heavy/light ones just get extra copies mixed in when a roll leans hard
@@ -94,15 +102,28 @@ function isRareWeapon(w) {
   return weaponScore(w) >= WEAPON_RARE_SCORE_THRESHOLD;
 }
 
+function isRangedWeapon(w) {
+  return w.type === 'ranged';
+}
+
 // Full multi-line tooltip text for the inventory/scrapper grid, mirroring
-// equipment.js's describeItemFull() for gear.
+// equipment.js's describeItemFull() for gear. "Дистанция" is melee reach
+// for everything except a bow, where the same `range` field scales arrow
+// speed instead (see projectile.js's Arrow — the arrow itself flies under
+// gravity until it lands or hits something, `range` isn't a distance cap
+// on it) — the label says so rather than implying it's still an arc length.
 function describeWeaponFull(w) {
-  return `${w.name}\nУрон ${w.damage} · КД ${w.cooldown}с · Дистанция ${Math.round(w.range)}\n${isRareWeapon(w) ? 'Редкое' : 'Обычное'}`;
+  const rangeLabel = isRangedWeapon(w) ? 'Скорость стрелы' : 'Дистанция';
+  return `${w.name}\nУрон ${w.damage} · КД ${w.cooldown}с · ${rangeLabel} ${Math.round(w.range)}\n${isRareWeapon(w) ? 'Редкое' : 'Обычное'}`;
 }
 
 let weaponUid = 0;
 
-function generateWeapon() {
+// kind: 'melee' | 'ranged'. Both roll against the SAME budget/axes — a bow
+// is not a separately-tuned archetype, just a different noun pool and a
+// different slot, where the same damage/cooldown/range numbers drive an
+// Arrow (see projectile.js) instead of a computeMeleeHitbox() swing.
+function generateWeapon(kind = 'melee') {
   const weights = rollStatWeights();
   const damage = Math.round(lerp(WEAPON_DAMAGE_MIN, WEAPON_DAMAGE_MAX, weights.damageWeight));
   // Inverted vs. the other two axes: a higher speed weight means a LOWER
@@ -112,18 +133,26 @@ function generateWeapon() {
   // Rolled once here (rather than re-derived from the name string later) so
   // the inventory icon picker (see icons.js) has an exact, locale-independent
   // key instead of having to parse it back out of the Russian display name.
-  const noun = WEAPON_NOUNS[randInt(0, WEAPON_NOUNS.length - 1)];
+  const pool = kind === 'ranged' ? RANGED_WEAPON_NOUNS : MELEE_WEAPON_NOUNS;
+  const noun = pool[randInt(0, pool.length - 1)];
 
   weaponUid += 1;
   return {
     id: `gen-${weaponUid}`,
     name: generateWeaponName(weights, noun),
     noun,
+    type: kind,
     damage,
     cooldown,
     range,
     color: WEAPON_COLOR_BY_AXIS[dominantAxis(weights)],
   };
+}
+
+// Convenience alias for the one caller family that always wants a bow
+// (chest loot routing, starting gear) — same generator, same budget.
+function generateBow() {
+  return generateWeapon('ranged');
 }
 
 // The one fixed, guaranteed item every run starts with: an even three-way
@@ -136,8 +165,25 @@ const STARTING_WEAPON = {
   id: 'starting-cleaver',
   name: 'Ржавый тесак',
   noun: 'тесак',
+  type: 'melee',
   damage: Math.round(lerp(WEAPON_DAMAGE_MIN, WEAPON_DAMAGE_MAX, STARTING_WEAPON_WEIGHT)),
   cooldown: Math.round(lerp(WEAPON_COOLDOWN_MAX, WEAPON_COOLDOWN_MIN, STARTING_WEAPON_WEIGHT) * 100) / 100,
   range: Math.round(lerp(WEAPON_RANGE_MIN, WEAPON_RANGE_MAX, STARTING_WEAPON_WEIGHT)),
   color: '#8a7f6b',
+};
+
+// The bow-slot counterpart to STARTING_WEAPON: every heir starts with both,
+// so the ranged slot is never empty and the bow is usable from the first
+// second of a run. Built from the SAME even three-way budget split, so it
+// sits at the median of what the bow generator can roll — a found bow is a
+// coin-flip upgrade, exactly like a found melee weapon.
+const STARTING_BOW = {
+  id: 'starting-bow',
+  name: 'Погнутый лук',
+  noun: 'лук',
+  type: 'ranged',
+  damage: STARTING_WEAPON.damage,
+  cooldown: STARTING_WEAPON.cooldown,
+  range: STARTING_WEAPON.range,
+  color: '#6b7a8a',
 };

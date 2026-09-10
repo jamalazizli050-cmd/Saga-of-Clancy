@@ -86,6 +86,31 @@ function itemScore(item) {
   );
 }
 
+// Auto-equip decides on TWO axes only: outgoing damage and incoming-damage
+// mitigation. A drop replaces what's worn if it beats the current piece on
+// either one — not on the blended itemScore above, which used to let a big
+// pile of HP/gold-find outweigh a straight defensive or offensive gain and
+// leave the better combat piece sitting unequipped in the bag.
+//
+// Everything else an item can roll (HP, speed, cooldowns, gold find) is
+// deliberately NOT part of this: those are preference, and the player weighs
+// them by hand in the inventory screen. Nothing is ever lost either way — the
+// displaced piece goes straight back to the bag (see equipFromInventory).
+function isCombatUpgrade(candidate, current) {
+  if (!current) return true;
+  return candidate.mods.damageBonus > current.mods.damageBonus
+    || candidate.mods.damageReduction > current.mods.damageReduction;
+}
+
+// How much a piece contributes to those same two axes, as one number. Used
+// only to choose WHICH filled accessory slot a candidate is measured against
+// (the one contributing least to damage/defence), so a new combat accessory
+// displaces the gold-find trinket rather than whichever slot happens to be
+// weakest by the blended score.
+function combatValue(item) {
+  return item.mods.damageBonus * 200 + item.mods.damageReduction * 300;
+}
+
 function generateArmor(slotType) {
   const scale = slotType === 'helm' ? HELM_BUDGET_SCALE : 1;
   // Single weight splits the budget: 0 = all mitigation, 1 = all flat HP.

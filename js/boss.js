@@ -64,6 +64,13 @@ class BossBase {
     this.alive = false;
   }
 
+  // Overridden by MirrorBoss (phase 2 only) — see its comment. False here
+  // means "resolve an Arrow hit against me normally", which is every other
+  // boss's and every other phase's behaviour, unchanged.
+  reflectsArrows() {
+    return false;
+  }
+
   // Turns to face the player unless they're almost exactly overlapping
   // (where sign(dx) flickers). Returns dx so callers don't recompute it.
   faceToward(player) {
@@ -247,10 +254,18 @@ const SAKARVER_MIN_COOLDOWN_MUL = 0.4; // fastest possible: 40% of base, at 0 HP
 const SAKARVER_LUNGE_SPEED_MUL = 2.4;
 
 class SakarverBoss extends BossBase {
-  // statMul (NG+ per-cycle buff) only scales her HP and outgoing attack
-  // damage, NOT selfDamage or the cooldown floor — those are her core pacing
-  // mechanic, not a "power" stat, and buffing selfDamage would make her
-  // weaker (she'd just kill herself faster), the opposite of NG+'s intent.
+  // statMul (NG+ per-cycle buff) scales her HP and outgoing attack damage,
+  // but not the cooldown floor — the acceleration is her signature read, not
+  // a power stat, so it stays identical across cycles.
+  //
+  // She used to also take 17 self-damage on every lunge, unconditionally.
+  // That wasn't a difficulty mechanic, it was a boss that beat itself: at 380
+  // HP and an accelerating 2.0s->0.8s cadence she killed herself in 23 lunges
+  // / ~32 seconds with the player doing nothing at all, so the fight could be
+  // won by standing still. The acceleration below never needed it — it keys
+  // off her HP fraction, and damage the PLAYER deals drives it just as well
+  // (better, in fact: hurting her makes her more dangerous, so burst damage
+  // is a real risk/reward call instead of a free win).
   constructor(x, y, options = {}) {
     super(x, y, options, {
       bishopKey: 'sakarver', defaultName: 'Сакарвер',
@@ -259,10 +274,8 @@ class SakarverBoss extends BossBase {
 
     this.attackTimer = SAKARVER_BASE_ATTACK_COOLDOWN;
     this.attackDamage = Math.round(16 * this.statMul); // damage to the player if the lunge connects
-    this.selfDamage = 17; // damage she inflicts on herself, every attack, unconditionally
     this.lungeActiveTimer = 0; // brief window during the dash where contact hurts the player
     this.contactCooldown = 0;
-    this.selfHitFlash = 0; // distinct flash cue for the self-inflicted hit
   }
 
   // 1.0 at full HP (full base cooldown) down to SAKARVER_MIN_COOLDOWN_MUL at 0 HP.
@@ -284,10 +297,6 @@ class SakarverBoss extends BossBase {
       this.vx = sign(dx) * this.speed * SAKARVER_LUNGE_SPEED_MUL;
       this.lungeActiveTimer = 0.35;
       this.attackTimer = SAKARVER_BASE_ATTACK_COOLDOWN * this.cooldownMultiplier;
-
-      this.hp = Math.max(0, this.hp - this.selfDamage);
-      this.selfHitFlash = 0.2;
-      if (this.hp <= 0) this.alive = false;
     } else if (this.lungeActiveTimer <= 0) {
       this.vx = sign(dx) * this.speed;
     }
@@ -299,7 +308,6 @@ class SakarverBoss extends BossBase {
 
     this.contactCooldown = Math.max(0, this.contactCooldown - dt);
     if (this.hitFlash > 0) this.hitFlash -= dt;
-    if (this.selfHitFlash > 0) this.selfHitFlash -= dt;
 
     // Contact only hurts the player during the lunge window — walking into
     // her between attacks is safe, keeping the danger tied to her actual
@@ -312,7 +320,7 @@ class SakarverBoss extends BossBase {
 
   draw(ctx, camX) {
     if (!this.alive) return;
-    this.drawBody(ctx, camX, this.hitFlash > 0 ? '#e8c0a0' : (this.selfHitFlash > 0 ? '#c04a3a' : '#4a3a4e'));
+    this.drawBody(ctx, camX, this.hitFlash > 0 ? '#e8c0a0' : '#4a3a4e');
 
     // "Getting faster" tell: a thin red bar that fills as her cooldown
     // shrinks toward its floor — a visible readout of the actual mechanic.
@@ -685,6 +693,12 @@ const BLAIREFACE_TELEGRAPH_STRIKE = 0.15;
 const BLAIREFACE_HEAVY_RANGE_MUL = 1.5;
 const BLAIREFACE_HEAVY_DAMAGE_MUL = 1.35; // was 1.6
 
+// Arrow reflection (phase 2 / Blairface only — see reflectsArrows() and
+// reflectArrow() below). Not a new colour: it's the exact accent her own
+// draw() already tints phase-2 idle frames with, reused here so a bounced
+// arrow reads as "hers" the same way her own body already does.
+const BLAIREFACE_REFLECT_COLOR = '#f0d43a';
+
 class MirrorBoss extends BossBase {
   // snapshot: { maxHp, weaponDamage, weaponRange, weaponCooldown, moveSpeed,
   // damageReduction, skinId } captured from Game.player at the moment the
@@ -877,6 +891,53 @@ class MirrorBoss extends BossBase {
     // Invulnerable for the duration of the palette-swap transformation.
     if (this.transforming) return;
     super.takeDamage(amount * (1 - this.damageReduction));
+  }
+
+  // Phase 2 (Blairface) only, and not mid-transform (this.phase is still 1
+  // for the whole palette-swap window — completeTransformation() is what
+  // flips it — so this already reads false there without an extra check;
+  // the arrow just bounces off her ordinary phase-1 invulnerability like it
+  // always did). Read fresh off `this.phase` every time main.js's projectile
+  // loop asks, rather than a stored flag, so it can never be left "stuck on"
+  // across the phase 1 -> 2 transition or a death.
+  //
+  // This is the whole counter to bow-spam the task asked for: phase 1 (a
+  // true mirror of the player, including their own bow if they're carrying
+  // one) is untouched, and phase 2 makes ranged spam actively punish the
+  // player instead of raising her max HP or damage — no global buff needed.
+  reflectsArrows() {
+    return this.phase === 2;
+  }
+
+  // Called by main.js's projectile loop instead of resolveAttack() when a
+  // 'player'-owned Arrow hits her while reflectsArrows() is true. She takes
+  // NO damage from it (this never calls takeDamage) and the arrow is never
+  // marked dead — it's the SAME Arrow instance, same gravity/room-collision
+  // physics, just re-aimed and re-flagged so main.js's owner-branch resolves
+  // it against the player next frame instead of against her/the trash. See
+  // Arrow's own `owner` comment in projectile.js for why one arrow can never
+  // bounce twice.
+  reflectArrow(arrow, player) {
+    // "Direction from Blairface's position back to the player at the moment
+    // of reflection" — recomputed here rather than just flipping the arrow's
+    // existing vx, so a player who moved (or an arrow that hit her from an
+    // unusual angle) still gets sent an arrow aimed at where they actually
+    // are, not just backward along the incoming line.
+    const dir = sign(player.x - this.x) || -arrow.facing;
+    arrow.facing = dir;
+    arrow.vx = dir * Math.abs(arrow.vx);
+    // Vertical motion (gravity-driven, see projectile.js's ARROW_GRAVITY) is
+    // deliberately left untouched — same physics, just a new horizontal aim.
+    arrow.owner = 'enemy';
+    arrow.color = BLAIREFACE_REFLECT_COLOR;
+
+    // Feedback that a hit connected but didn't land as damage: the same
+    // hitFlash + Effects.hit punctuation every other hit in the game uses
+    // (see BossBase.takeDamage), just without the HP loss, and in her own
+    // accent colour instead of the generic hit-flash tan so it doesn't read
+    // as "that damaged her".
+    this.hitFlash = 0.15;
+    Effects.hit(this.x + this.w / 2, this.y + this.h / 2, arrow.damage, BLAIREFACE_REFLECT_COLOR, false);
   }
 
   // Phase 1 ending doesn't kill her — it triggers the Blairface transform.

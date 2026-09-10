@@ -15,9 +15,12 @@ const HUD = {
     this.els.goldValue = document.getElementById('gold-value');
     this.els.shardValue = document.getElementById('shard-value');
     this.els.prestigeValue = document.getElementById('prestige-value');
+    this.els.arrowValue = document.getElementById('arrow-value');
     this.els.heirName = document.getElementById('heir-name');
     this.els.weaponDisplay = document.getElementById('weapon-display');
     this.els.weaponName = document.getElementById('weapon-name');
+    this.els.bowDisplay = document.getElementById('bow-display');
+    this.els.bowName = document.getElementById('bow-name');
     this.els.equipDisplay = document.getElementById('equip-display');
     this.els.equipHelm = document.getElementById('equip-helm');
     this.els.equipChest = document.getElementById('equip-chest');
@@ -34,6 +37,9 @@ const HUD = {
     this.els.btnBuyBandage = document.getElementById('btn-buy-bandage');
     this.els.merchantBandagePct = document.getElementById('merchant-bandage-pct');
     this.els.merchantBandageCost = document.getElementById('merchant-bandage-cost');
+    this.els.btnBuyArrows = document.getElementById('btn-buy-arrows');
+    this.els.merchantArrowSize = document.getElementById('merchant-arrow-size');
+    this.els.merchantArrowCost = document.getElementById('merchant-arrow-cost');
     this.els.merchantOffers = document.getElementById('merchant-offers');
     this.els.btnMerchantReroll = document.getElementById('btn-merchant-reroll');
     this.els.merchantRerollCost = document.getElementById('merchant-reroll-cost');
@@ -56,6 +62,13 @@ const HUD = {
     this.els.cycleHeirChoices = document.getElementById('cycle-heir-choices');
 
     this.els.scrapperPrompt = document.getElementById('scrapper-prompt');
+
+    this.els.bloodPanel = document.getElementById('blood-panel');
+    this.els.bloodCost = document.getElementById('blood-cost');
+    this.els.btnBloodAccept = document.getElementById('btn-blood-accept');
+    this.els.btnBloodDecline = document.getElementById('btn-blood-decline');
+    this.els.treasureOverlay = document.getElementById('treasure-overlay');
+    this.els.treasureChoices = document.getElementById('treasure-choices');
 
     this.els.inventoryOverlay = document.getElementById('inventory-overlay');
     this.els.inventorySlots = document.getElementById('inventory-slots');
@@ -102,6 +115,8 @@ const HUD = {
       this.setInventoryPanel(false);
       this.setScrapperPanel(false);
       this.setPauseMenu(false);
+      this.setBloodOffer(false);
+      this.setTreasurePanel(false);
     }
   },
 
@@ -179,14 +194,20 @@ const HUD = {
     this.els.creditsOverlay.classList.toggle('hidden', !visible);
   },
 
-  update({ hp, maxHp, gold, shards, prestige, weaponName, heirName, equipment }) {
+  update({ hp, maxHp, gold, shards, prestige, arrows, weaponName, bowName, heirName, equipment }) {
     const pct = clamp(hp / maxHp, 0, 1) * 100;
     this.els.hpBar.style.width = pct + '%';
     this.els.hpText.textContent = `${Math.ceil(hp)} / ${maxHp}`;
     this.els.goldValue.textContent = gold;
     this.els.shardValue.textContent = shards;
     this.els.prestigeValue.textContent = prestige;
+    this.els.arrowValue.textContent = arrows;
+    // Out of ammo is a state the player has to be able to read at a glance —
+    // right-click silently doing nothing is otherwise indistinguishable from
+    // a broken control.
+    this.els.arrowValue.classList.toggle('depleted', arrows <= 0);
     this.els.weaponName.textContent = weaponName;
+    this.els.bowName.textContent = bowName;
     this.els.heirName.textContent = heirName;
 
     if (equipment) {
@@ -204,6 +225,7 @@ const HUD = {
   // are hidden in the neutral hub (see Game.enterHub).
   setWeaponVisible(visible) {
     this.els.weaponDisplay.classList.toggle('hidden', !visible);
+    this.els.bowDisplay.classList.toggle('hidden', !visible);
     this.els.equipDisplay.classList.toggle('hidden', !visible);
   },
 
@@ -270,19 +292,25 @@ const HUD = {
     this.els.merchantPanel.style.left = opts.left + 'px';
     this.els.merchantPanel.style.top = opts.top + 'px';
 
-    const { bandage, offers, reroll } = opts;
+    const { bandage, arrows, offers, reroll } = opts;
     this.els.merchantBandagePct.textContent = bandage.healPct;
     this.els.merchantBandageCost.textContent = bandage.cost;
     // Disabled at full HP as well as when broke — selling a no-op heal is
     // just a way to take the player's gold for nothing.
     this.els.btnBuyBandage.disabled = !bandage.canAfford;
 
+    this.els.merchantArrowSize.textContent = arrows.size;
+    this.els.merchantArrowCost.textContent = arrows.cost;
+    // Only gated on gold: there's no arrow cap, so a resupply is never a no-op
+    // the way a full-HP bandage would be.
+    this.els.btnBuyArrows.disabled = !arrows.canAfford;
+
     this.els.merchantRerollCost.textContent = reroll.cost;
     this.els.btnMerchantReroll.disabled = !reroll.canAfford;
 
     // Same "don't rebuild every frame" guard as the upgrade panels below —
     // updateHub() calls this continuously while in range.
-    const signature = `${bandage.canAfford}|${reroll.canAfford}|` + offers.map((o) => `${o.id}:${o.canAfford}`).join(',');
+    const signature = `${bandage.canAfford}|${arrows.canAfford}|${reroll.canAfford}|` + offers.map((o) => `${o.id}:${o.canAfford}`).join(',');
     if (signature === this.merchantSignature) return;
     this.merchantSignature = signature;
 
@@ -468,6 +496,44 @@ const HUD = {
   // fully on every call — unlike the per-frame obelisk/merchant panels,
   // this is only ever called right after a state-changing click, never on
   // a 60fps timer, so there's no button-swallowed-by-rebuild risk here.
+  // Blood covenant offer. Cost is passed in rather than computed here so the
+  // HUD never has to know the covenant's rules — see rooms.js.
+  setBloodOffer(visible, opts) {
+    this.els.bloodPanel.classList.toggle('hidden', !visible);
+    if (!visible) return;
+    this.els.bloodCost.textContent = opts.cost;
+  },
+
+  // Treasure room's "choose one". Rebuilt on open only (never on a 60fps
+  // timer), same as the inventory panel, so a click can't be swallowed by a
+  // rebuild mid-press.
+  setTreasurePanel(visible, opts) {
+    this.els.treasureOverlay.classList.toggle('hidden', !visible);
+    if (!visible) return;
+
+    const container = this.els.treasureChoices;
+    container.innerHTML = '';
+    for (const choice of opts.choices) {
+      const cell = document.createElement('button');
+      cell.className = 'treasure-choice';
+      cell.id = `treasure-choice-${choice.id}`;
+
+      const title = document.createElement('span');
+      title.className = 'tc-title';
+      title.textContent = choice.title;
+      const detail = document.createElement('span');
+      detail.className = 'tc-detail';
+      detail.textContent = choice.detail;
+      const hint = document.createElement('span');
+      hint.className = 'tc-hint';
+      hint.textContent = choice.hint;
+
+      cell.append(title, detail, hint);
+      cell.addEventListener('click', () => opts.onChoose(choice.id));
+      container.appendChild(cell);
+    }
+  },
+
   setInventoryPanel(visible, opts) {
     this.els.inventoryOverlay.classList.toggle('hidden', !visible);
     if (!visible) return;
@@ -475,15 +541,20 @@ const HUD = {
     const slotsContainer = this.els.inventorySlots;
     slotsContainer.innerHTML = '';
 
-    const weaponEntry = { kind: 'weapon', item: opts.weapon };
-    const weaponRare = opts.isRare(weaponEntry);
-    const weaponCell = document.createElement('div');
-    weaponCell.className = 'equip-slot-cell equip-slot-filled';
-    weaponCell.appendChild(this.buildItemIconBox(weaponEntry, weaponRare, true));
-    const weaponText = document.createElement('span');
-    weaponText.textContent = `Оружие: ${opts.weapon.name}`;
-    weaponCell.appendChild(weaponText);
-    slotsContainer.appendChild(weaponCell);
+    // The two armament slots. Neither is clickable-to-unequip the way gear
+    // slots are: there's always exactly one melee weapon and one bow
+    // equipped, and swapping happens by clicking a different one in the grid
+    // below (see Player.manualEquipWeapon, which routes each to its own slot).
+    for (const [label, item] of [['Оружие', opts.weapon], ['Лук', opts.bow]]) {
+      const entry = { kind: 'weapon', item };
+      const cell = document.createElement('div');
+      cell.className = 'equip-slot-cell equip-slot-filled';
+      cell.appendChild(this.buildItemIconBox(entry, opts.isRare(entry), true));
+      const text = document.createElement('span');
+      text.textContent = `${label}: ${item.name}`;
+      cell.appendChild(text);
+      slotsContainer.appendChild(cell);
+    }
 
     const slotLabels = { helm: 'Шлем', chest: 'Нагрудник', acc1: 'Аксессуар 1', acc2: 'Аксессуар 2', acc3: 'Аксессуар 3', acc4: 'Аксессуар 4' };
     const gearSlots = ['helm', 'chest', ...opts.accessorySlots];
@@ -580,6 +651,34 @@ const HUD = {
 
       btn.appendChild(nameEl);
       btn.appendChild(statsEl);
+
+      // Archetype identity (heirs.js) — three short lines so the card stays
+      // scannable at a glance rather than a paragraph to read under time
+      // pressure on the death screen: which STYLE this heir plays, the one
+      // concrete BONUS behind it, and the one concrete DRAWBACK that keeps
+      // it from just being strictly better. Older/hand-built heir objects
+      // without these fields (there shouldn't be any from rollHeirs()
+      // anymore, but this stays defensive) simply render the card without
+      // them, same as a missing skinId already does above.
+      if (heir.styleLabel) {
+        const styleEl = document.createElement('div');
+        styleEl.className = 'heir-style';
+        styleEl.textContent = heir.styleLabel;
+        btn.appendChild(styleEl);
+      }
+      if (heir.bonusLabel) {
+        const bonusEl = document.createElement('div');
+        bonusEl.className = 'heir-bonus';
+        bonusEl.textContent = heir.bonusLabel;
+        btn.appendChild(bonusEl);
+      }
+      if (heir.drawbackLabel) {
+        const drawbackEl = document.createElement('div');
+        drawbackEl.className = 'heir-drawback';
+        drawbackEl.textContent = heir.drawbackLabel;
+        btn.appendChild(drawbackEl);
+      }
+
       btn.addEventListener('click', () => onChoose(heir));
       container.appendChild(btn);
     }

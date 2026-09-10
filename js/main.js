@@ -84,8 +84,38 @@ function buildTitleScreenOpts() {
   };
 }
 
+// Treasure room's choice panel. Freezes the game the same way the inventory
+// does (see `paused` in loop()) — there are no enemies in a treasure room,
+// but a frozen world behind the panel is what every other modal here does,
+// and consistency beats a special case.
+let treasureOpen = false;
+
+function openTreasurePanel() {
+  treasureOpen = true;
+  // Same display-accuracy fix as bandageStatus() (see its comment): Survivor
+  // sees the heal option's REAL number here, not the nominal one every other
+  // heir gets — TREASURE_CHOICES itself stays untouched (it's what every
+  // other archetype actually sees), this only overrides the one line.
+  const survivorMul = Game.player.archetype === 'survivor' ? SURVIVOR_HEAL_MUL : 1;
+  const choices = TREASURE_CHOICES.map((c) => c.id === 'heal'
+    ? { ...c, detail: `+${Math.round(TREASURE_HEAL_FRACTION * survivorMul * 100)}% HP` }
+    : c);
+  HUD.setTreasurePanel(true, {
+    choices,
+    onChoose: (id) => {
+      const picked = Game.applyTreasureChoice(id);
+      treasureOpen = false;
+      HUD.setTreasurePanel(false);
+      if (picked) {
+        const p = Game.player;
+        Effects.burst(p.x + p.w / 2, p.y + p.h / 2, '#d1b13c', 24, 8 * WORLD_SCALE);
+      }
+    },
+  });
+}
+
 function openPause() {
-  if (inventoryOpen || scrapperOpen) return;
+  if (inventoryOpen || scrapperOpen || treasureOpen) return;
   pauseOpen = true;
   HUD.setPauseMenu(true, { showHubReturn: Game.state === 'run' || Game.state === 'boss' });
 }
@@ -130,6 +160,7 @@ function renderInventoryPanel() {
   HUD.setInventoryPanel(true, {
     equipment: player.equipment,
     weapon: player.weapon,
+    bow: player.bow,
     accessorySlots: player.accessorySlots,
     items: player.unequippedItems(),
     isRare: (entry) => Game.isRareItem(entry),
@@ -176,22 +207,76 @@ function closeScrapper() {
   HUD.setScrapperPanel(false);
 }
 
-function resolveAttack(hitbox) {
-  if (!hitbox) return;
+// Berserker/Hunter: a flat multiplier that's the same for every target THIS
+// hitbox can possibly hit (it depends only on the swing/shot itself — which
+// weapon type, how many enemies are near the point of impact — never on a
+// specific target), so it's computed once per hitbox rather than per target.
+// `hitbox instanceof Arrow` is exactly what already distinguishes a bow shot
+// from a melee swing everywhere else this hitbox shape is used — no new tag
+// needed. Reads Game.enemies only, so it's a no-op during a boss fight
+// (enemies=[] there) — Berserker's "surrounded" bonus is a trash-room read
+// by construction, not something that also inflates boss damage.
+function archetypeDamageMultiplier(hitbox) {
+  const archetype = Game.player ? Game.player.archetype : null;
+  if (archetype === 'berserker') {
+    if (hitbox instanceof Arrow) return 1; // melee-only
+    const cx = hitbox.x + hitbox.w / 2, cy = hitbox.y + hitbox.h / 2;
+    let nearby = 0;
+    for (const enemy of Game.enemies) {
+      if (!enemy.alive) continue;
+      const ex = enemy.x + enemy.w / 2, ey = enemy.y + enemy.h / 2;
+      if (Math.hypot(ex - cx, ey - cy) <= BERSERKER_RADIUS) {
+        nearby += 1;
+        if (nearby >= BERSERKER_MIN_NEARBY) return 1 + BERSERKER_MELEE_BONUS;
+      }
+    }
+    return 1;
+  }
+  if (archetype === 'hunter') {
+    return hitbox instanceof Arrow ? 1 + HUNTER_BOW_BONUS : 1 - HUNTER_MELEE_PENALTY;
+  }
+  return 1;
+}
+
+// Executioner: the one archetype multiplier that genuinely depends on WHICH
+// target got hit (its own hp/maxHp fraction at the moment of impact), so —
+// unlike the one above — this has to be evaluated inside resolveAttack()'s
+// per-target loop rather than folded into a single up-front `damage` value.
+// Works identically against trash, an Elite champion, or a boss: all three
+// expose the same hp/maxHp pair.
+function executionerMultiplier(target) {
+  if (!Game.player || Game.player.archetype !== 'executioner') return 1;
+  const frac = target.hp / target.maxHp;
+  if (frac <= EXECUTIONER_LOW_HP_FRACTION) return 1 + EXECUTIONER_LOW_HP_BONUS;
+  if (frac >= EXECUTIONER_FULL_HP_FRACTION) return 1 - EXECUTIONER_FULL_HP_PENALTY;
+  return 1;
+}
+
+// Returns whether anything actually got hit — melee's own caller ignores
+// it, but the projectile loop below uses it to know an Arrow should
+// disappear THIS frame rather than keep re-triggering every frame it still
+// happens to overlap something (see the "hitbox" comment on Arrow.update).
+function resolveAttack(hitbox, fromX = Game.player.x + Game.player.w / 2) {
+  if (!hitbox) return false;
   // Two multipliers that aren't weapon stats, applied at the point of
   // impact rather than baked into the weapon: the permanent shard-bought
-  // upgrade (meta progression) and the equipped gear's damageBonus.
+  // upgrade (meta progression) and the equipped gear's damageBonus. The
+  // active heir's archetype (see heirs.js) is a third, same idea — none of
+  // these are stored on the weapon itself, all three are read fresh here.
   const gearBonus = Game.player ? Game.player.equipMods.damageBonus : 0;
-  const damage = hitbox.damage * Game.damageMultiplier() * (1 + gearBonus);
-  const fromX = Game.player.x + Game.player.w / 2;
+  const damage = hitbox.damage * Game.damageMultiplier() * (1 + gearBonus) * archetypeDamageMultiplier(hitbox);
+  let hitSomething = false;
   for (const enemy of Game.enemies) {
     if (enemy.alive && aabbIntersect(hitbox, enemy)) {
-      enemy.takeDamage(damage, fromX);
+      enemy.takeDamage(damage * executionerMultiplier(enemy), fromX);
+      hitSomething = true;
     }
   }
   if (Game.boss && Game.boss.alive && aabbIntersect(hitbox, Game.boss)) {
-    Game.boss.takeDamage(damage);
+    Game.boss.takeDamage(damage * executionerMultiplier(Game.boss));
+    hitSomething = true;
   }
+  return hitSomething;
 }
 
 function updateCamera(room, player) {
@@ -225,6 +310,7 @@ function updateHub(dt) {
       left: HubProps.merchant.x + HubProps.merchant.w / 2,
       top: HubProps.merchant.y - 20 * WORLD_SCALE,
       bandage: Game.bandageStatus(),
+      arrows: Game.arrowBundleStatus(),
       offers: Game.merchantOfferStatuses(),
       reroll: { cost: MERCHANT_REROLL_COST, canAfford: Game.save.gold >= MERCHANT_REROLL_COST },
       onBuyOffer: (id) => Game.buyMerchantOffer(id),
@@ -297,14 +383,69 @@ function updateHub(dt) {
   }
 }
 
+// Previous frame's HP, so a drop can be spotted without Player having to
+// report damage upward (see the 'nohit' challenge in the run block below).
+// Starts at 0 so the very first frame of a session can't read as a drop;
+// across a room transition it carries the real value, and entering a room
+// never changes HP, so the comparison stays honest there.
+let hpLastFrame = 0;
+
 function update(dt) {
   const { room, player } = Game;
   const canAttack = !(Game.boss && Game.boss.inSmoke);
 
   player.update(dt, room, canAttack);
   resolveAttack(player.pendingHitbox);
+  if (player.pendingProjectile) {
+    const p = player.pendingProjectile;
+    Game.projectiles.push(new Arrow(p.x, p.y, p.facing, p.damage, p.range, p.color));
+  }
+
+  // Arrows update/resolve every frame regardless of run/boss state (a bow
+  // works against both). An Arrow's own shape (x/y/w/h/damage) already
+  // matches what resolveAttack() expects from a melee hitbox, so it's
+  // passed straight through rather than needing its own resolution path —
+  // the moment it actually connects, it's marked dead so it can never hit
+  // twice while overlapping something on its way to disappearing anyway.
+  //
+  // Blairface's phase-2 reflection (see MirrorBoss.reflectsArrows()) branches
+  // BEFORE that resolution: a 'player' arrow that hits her while she's
+  // reflecting is handed to reflectArrow() instead of resolveAttack() — she
+  // takes no damage and the arrow survives, just re-flagged 'enemy' and
+  // re-aimed. An 'enemy' arrow never reaches resolveAttack() at all (that
+  // would resolve against enemies/the boss, not the player); it's checked
+  // against the player directly, right here, same takeDamage() call every
+  // other hazard in the game already uses.
+  for (const arrow of Game.projectiles) {
+    if (!arrow.alive) continue;
+    arrow.update(dt, room);
+    if (!arrow.alive) continue;
+
+    if (arrow.owner === 'enemy') {
+      if (aabbIntersect(arrow, player)) {
+        player.takeDamage(arrow.damage, arrow.x);
+        arrow.alive = false;
+      }
+      continue;
+    }
+
+    if (Game.boss && Game.boss.alive && Game.boss.reflectsArrows() && aabbIntersect(arrow, Game.boss)) {
+      Game.boss.reflectArrow(arrow, player);
+      continue;
+    }
+
+    if (resolveAttack(arrow, arrow.x)) arrow.alive = false;
+  }
+  if (Game.projectiles.length > 0) Game.projectiles = Game.projectiles.filter((a) => a.alive);
 
   if (Game.state === 'run') {
+    // The 'nohit' challenge's whole rule, in one line: any drop in HP this
+    // room forfeits the bonus. Watched here rather than hooked into
+    // Player.takeDamage so the player class stays unaware of room kinds.
+    if (player.hp < hpLastFrame) Game.roomHitTaken = true;
+
+    if (Game.roomBannerTimer > 0) Game.roomBannerTimer -= dt;
+
     for (const enemy of Game.enemies) {
       const wasAlive = enemy.alive;
       enemy.update(dt, room, player);
@@ -331,14 +472,39 @@ function update(dt) {
       });
       if (Input.wasPressed('KeyE')) {
         Game.openChest(nearestChest);
+        if (Game.treasureChoiceOpen) openTreasurePanel();
+        else if (Game.lastRoomReward) {
+          Effects.burst(nearestChest.x + nearestChest.w / 2, nearestChest.y, '#b58ac9', 26, 10 * WORLD_SCALE);
+        }
       }
     } else {
       HUD.setChestPrompt(false);
     }
 
     const allCleared = Game.enemies.every((e) => !e.alive);
-    room.doorOpenAmount = clamp(room.doorOpenAmount + (allCleared ? 1 : -1) * DOOR_OPEN_SPEED * dt, 0, 1);
-    if (allCleared && player.x + player.w >= room.exitX) {
+
+    // A 'waves' challenge reuses the room's own spawn table for its next
+    // wave rather than carrying a second one — clearing the floor summons
+    // the next set instead of opening the door.
+    if (allCleared && Game.pendingWaves > 0) {
+      Game.pendingWaves -= 1;
+      Game.waveIndex += 1;
+      Game.enemies = spawnEnemiesForRoom(Game.roomIndex);
+      Effects.burst(player.x + player.w / 2, player.y + player.h / 2, '#6fa3b8', 18, 8 * WORLD_SCALE);
+    }
+
+    // The door only counts a room as finished once no waves are pending, so
+    // a half-fought challenge can't be walked out of.
+    const roomFinished = allCleared && Game.pendingWaves === 0;
+    if (roomFinished && !Game.roomRewardGranted) {
+      const reward = Game.grantRoomClearReward();
+      if (reward) {
+        Game.lastRoomReward = reward;
+        Effects.burst(player.x + player.w / 2, player.y + player.h / 2, '#d1b13c', 22, 9 * WORLD_SCALE);
+      }
+    }
+    room.doorOpenAmount = clamp(room.doorOpenAmount + (roomFinished ? 1 : -1) * DOOR_OPEN_SPEED * dt, 0, 1);
+    if (roomFinished && player.x + player.w >= room.exitX) {
       Game.advanceRoom();
     }
   } else if (Game.state === 'boss') {
@@ -359,6 +525,7 @@ function update(dt) {
     return;
   }
 
+  hpLastFrame = player.hp;
   updateCamera(room, player);
 }
 
@@ -453,7 +620,9 @@ function renderHub(timestamp) {
     gold: Game.save.gold,
     shards: Game.save.shards,
     prestige: Game.save.prestige,
+    arrows: player.arrows,
     weaponName: player.weapon.name,
+    bowName: player.bow.name,
     heirName: Game.activeHeir.name,
     equipment: player.equipment,
   });
@@ -473,9 +642,10 @@ function render(timestamp) {
 
   drawRoom(room, camX, timestamp);
 
-  for (const chest of Game.chests) chest.draw(ctx, camX, chest === nearestChest);
+  for (const chest of Game.chests) chest.draw(ctx, camX, chest === nearestChest, timestamp);
   for (const enemy of Game.enemies) enemy.draw(ctx, camX);
   if (Game.boss) Game.boss.draw(ctx, camX);
+  for (const arrow of Game.projectiles) arrow.draw(ctx, camX);
   player.draw(ctx, camX);
   Effects.draw(ctx, camX);
 
@@ -494,6 +664,7 @@ function render(timestamp) {
   // shake transform on purpose: the vignette is a fixed screen overlay, not
   // world content, and shaking it too would look like the UI itself glitching.
   drawArenaVignette(ctx, Game.boss);
+  drawRoomBanner(timestamp);
 
   HUD.update({
     hp: player.hp,
@@ -501,10 +672,68 @@ function render(timestamp) {
     gold: Game.save.gold,
     shards: Game.save.shards,
     prestige: Game.save.prestige,
+    arrows: player.arrows,
     weaponName: player.weapon.name,
+    bowName: player.bow.name,
     heirName: Game.activeHeir.name,
     equipment: player.equipment,
   });
+}
+
+// A special room announces itself on arrival and then gets out of the way:
+// a symbol, its name, and the rule in one line, fading out over the last
+// second. Challenge rooms additionally keep a small live status pinned under
+// it for as long as the room lasts, because their rule is something the
+// player has to keep track of, not just read once.
+function drawRoomBanner(timestamp) {
+  if (Game.state !== 'run') return;
+  const entry = Game.roomChain[Game.roomIndex];
+  if (!entry) return;
+
+  // While a room's own panel is up, the panel IS the announcement — drawing
+  // the banner behind it stacks two copies of the same title. The timer is
+  // frozen along with the rest of the run meanwhile, so the banner still gets
+  // its full moment once the player has answered.
+  const panelUp = Game.bloodOfferOpen || treasureOpen;
+  const banner = Game.roomBanner;
+  if (banner && Game.roomBannerTimer > 0 && !panelUp) {
+    const t = Game.roomBannerTimer / ROOM_BANNER_DURATION;
+    const alpha = clamp(t * 3, 0, 1); // hold, then fade over the last third
+    const cx = CANVAS_W / 2;
+    const y = CANVAS_H * 0.2;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.textAlign = 'center';
+
+    ctx.fillStyle = banner.color;
+    ctx.font = `${34 * WORLD_SCALE}px 'Courier New', monospace`;
+    ctx.fillText(banner.symbol, cx, y - 34 * WORLD_SCALE);
+
+    ctx.font = `${26 * WORLD_SCALE}px 'Courier New', monospace`;
+    ctx.fillText(banner.label, cx, y);
+
+    if (banner.sub) {
+      ctx.fillStyle = '#c7ccd6';
+      ctx.font = `${13 * WORLD_SCALE}px 'Courier New', monospace`;
+      ctx.fillText(banner.sub, cx, y + 22 * WORLD_SCALE);
+    }
+    ctx.restore();
+  }
+
+  if (entry.kind !== 'challenge') return;
+  const variant = CHALLENGE_VARIANTS[entry.challenge];
+  const intact = Game.challengeHonoured(entry);
+  const text = entry.challenge === 'waves'
+    ? `${variant.status} ${Game.waveIndex}/${CHALLENGE_WAVE_COUNT}`
+    : `${variant.status}: ${intact ? 'ЦЕЛО' : 'ПРОВАЛЕНО'}`;
+
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.font = `${14 * WORLD_SCALE}px 'Courier New', monospace`;
+  ctx.fillStyle = intact ? '#6fa3b8' : '#7a2d2d';
+  ctx.fillText(text, CANVAS_W / 2, CANVAS_H * 0.08);
+  ctx.restore();
 }
 
 let lastTime = 0;
@@ -523,8 +752,19 @@ function loop(timestamp) {
   // hub-only, opened via its own E prompt (see updateHub). Only one modal
   // at a time — see toggleInventory()/openScrapper()'s mutual guards, and
   // pauseOpen blocks both from opening while the pause menu is up.
+  // The blood offer is driven off Game state rather than a local flag,
+  // because beginRoomKind() is what raises it — the panel just mirrors it.
+  // Handled here, above the `paused` gate, since the offer itself is what's
+  // pausing the run.
+  HUD.setBloodOffer(Game.bloodOfferOpen, Game.bloodOfferOpen ? { cost: bloodCovenantCost(Game.player) } : undefined);
+  if (Game.bloodOfferOpen) {
+    if (Input.wasPressed('KeyE')) Game.acceptBloodCovenant();
+    else if (Input.wasPressed('KeyQ')) Game.declineBloodCovenant();
+  }
+
   const canToggleInventory = Game.state === 'hub' || Game.state === 'run' || Game.state === 'boss';
-  if (canToggleInventory && !scrapperOpen && !pauseOpen && Input.wasPressedAny(['KeyI', 'Tab'])) {
+  if (canToggleInventory && !scrapperOpen && !pauseOpen && !treasureOpen && !Game.bloodOfferOpen
+      && Input.wasPressedAny(['KeyI', 'Tab'])) {
     toggleInventory();
   }
   // KeyI/Tab deliberately excluded here: closing on I/Tab would read the
@@ -553,7 +793,10 @@ function loop(timestamp) {
     else if (Game.state === 'hub' || Game.state === 'run' || Game.state === 'boss') openPause();
   }
 
-  const paused = inventoryOpen || scrapperOpen || pauseOpen;
+  // The blood offer freezes the run too: it's a decision about a room you
+  // haven't entered the fight of yet, so letting enemies close in while the
+  // panel is up would turn a choice into a penalty for reading it.
+  const paused = inventoryOpen || scrapperOpen || pauseOpen || treasureOpen || Game.bloodOfferOpen;
 
   if (Game.state === 'title') {
     renderTitle(timestamp);
@@ -571,6 +814,9 @@ function loop(timestamp) {
 
 document.getElementById('btn-cycle-continue').addEventListener('click', () => Game.showCycleHeirChoice());
 document.getElementById('btn-buy-bandage').addEventListener('click', () => Game.buyBandage());
+document.getElementById('btn-buy-arrows').addEventListener('click', () => Game.buyArrows());
+document.getElementById('btn-blood-accept').addEventListener('click', () => Game.acceptBloodCovenant());
+document.getElementById('btn-blood-decline').addEventListener('click', () => Game.declineBloodCovenant());
 document.getElementById('btn-merchant-reroll').addEventListener('click', () => Game.rerollMerchantOffers());
 document.getElementById('btn-inventory-close').addEventListener('click', () => toggleInventory());
 document.getElementById('btn-scrapper-close').addEventListener('click', () => closeScrapper());
@@ -586,6 +832,27 @@ document.getElementById('btn-title-newgame').addEventListener('click', () => {
   )) return;
   Game.startNewGame();
 });
+
+// --- Тест-меню (см. index.html's debug-overlay, Game.debugFightBoss/
+// debugTestRoom в game.js). Кнопки статичные — читаем их data-атрибуты
+// вместо построения списка в HUD, поскольку набор боссов/комнат не меняется
+// во время игры.
+document.getElementById('btn-title-debug').addEventListener('click', () => {
+  document.getElementById('debug-overlay').classList.remove('hidden');
+});
+document.getElementById('btn-debug-close').addEventListener('click', () => {
+  document.getElementById('debug-overlay').classList.add('hidden');
+});
+for (const btn of document.querySelectorAll('.debug-btn')) {
+  btn.addEventListener('click', () => {
+    document.getElementById('debug-overlay').classList.add('hidden');
+    if (btn.dataset.debugBoss) {
+      Game.debugFightBoss(btn.dataset.debugBoss);
+    } else if (btn.dataset.debugRoom) {
+      Game.debugTestRoom(btn.dataset.debugRoom, btn.dataset.debugChallenge || null);
+    }
+  });
+}
 
 // --- Pause menu -------------------------------------------------------------
 

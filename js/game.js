@@ -23,9 +23,17 @@
 
 const SAVE_KEY = 'dema_roguelike_save_v1';
 const BASE_MAX_HP = 100;
+// Each level multiplies max HP by 1.1 (see currentMaxHp), so the track is
+// worth ~1.6x HP in total — priced accordingly. The cost curve is GEOMETRIC,
+// not the flat +40/level it used to be: at 50/90/130/170/210 the whole track
+// cost 650 against a full chain traversal's ~1000-1500 gold income, so the
+// first run bought three levels outright and the track was effectively free
+// meta-progression rather than a spending decision. Now each level costs
+// ~1.8x the last, so an early level is affordable but a late one is a
+// multi-run goal and the track spans most of a dynasty instead of one run.
 const HP_UPGRADE_MAX_LEVEL = 5;
-const HP_UPGRADE_BASE_COST = 50;
-const HP_UPGRADE_COST_STEP = 40;
+const HP_UPGRADE_BASE_COST = 220;
+const HP_UPGRADE_COST_MULT = 1.9;
 
 // Shard-only upgrades. Deliberately stronger per level than the gold HP
 // upgrade, and gated behind a currency that only comes from boss kills —
@@ -79,6 +87,15 @@ const HUB_REST_HEAL_FRACTION = 0.3; // of max HP, granted on each mid-boss hub p
 const BANDAGE_COST = 45;
 const BANDAGE_HEAL_FRACTION = 0.35;
 
+// Arrow resupply at the merchant. Repeatable like the bandage, and the only
+// way to restock the bow other than chest drops (see CHEST_ARROW_* in
+// chest.js) — without it a run that burned its quiver early had a dead
+// weapon slot until the next lucky chest. Priced so a bundle costs about
+// three bandages: enough that arrows stay a resource worth aiming with,
+// cheap enough that the bow is never permanently off the table.
+const ARROW_BUNDLE_SIZE = 8;
+const ARROW_BUNDLE_COST = 150;
+
 // --- Merchant gear offers ----------------------------------------------
 // Economy audit: once the gold-bought HP track caps out (650 gold total)
 // the bandage was the ONLY remaining gold sink, and it can't absorb a full
@@ -113,12 +130,17 @@ const ENEMY_SCALING_PER_ROOM = 0.18; // rank-and-file HP/damage/reward per room 
 // read as a tier above the shard upgrades.
 const PRESTIGE_PER_CYCLE_BASE = 2; // award = base + one extra per prior cycle
 
+// Costs cut roughly a third from the original 3/4-6/5/4-6 (28 echo for the
+// whole tree). At 2 echo for a first cycle and one more per cycle after, that
+// took ~7 full clears to finish — long enough that most of the tree was
+// something a player read about rather than used. At 19 total it lands closer
+// to 4-5 clears, so each cycle actually unlocks something.
 const PRESTIGE_UPGRADES = [
   {
     key: 'weapon',
     saveKey: 'prestigeWeaponLevel',
     maxLevel: 1,
-    costs: [3],
+    costs: [2],
     title: 'Наследие оружия',
     desc: 'Наследник начинает забег со сгенерированным оружием вместо тесака',
   },
@@ -126,7 +148,7 @@ const PRESTIGE_UPGRADES = [
     key: 'armor',
     saveKey: 'prestigeArmorLevel',
     maxLevel: 2,
-    costs: [4, 6],
+    costs: [3, 4],
     title: 'Врождённая броня',
     desc: 'Забег начинается с 1 (затем 2) случайными частями брони',
   },
@@ -134,7 +156,7 @@ const PRESTIGE_UPGRADES = [
     key: 'slot',
     saveKey: 'prestigeSlotLevel',
     maxLevel: 1,
-    costs: [5],
+    costs: [3],
     title: 'Четвёртый слот',
     desc: 'Открывает 4-й слот аксессуара навсегда',
   },
@@ -142,7 +164,7 @@ const PRESTIGE_UPGRADES = [
     key: 'gold',
     saveKey: 'prestigeGoldLevel',
     maxLevel: 2,
-    costs: [4, 6],
+    costs: [3, 4],
     title: 'Стойкость рода',
     desc: 'При смерти золото конвертируется в шарды по курсу 12 (затем 10) вместо 15 за шард',
   },
@@ -164,20 +186,22 @@ const PRESTIGE_UPGRADES = [
 //     onPlayerDeath), so it can only ever be spent WITHIN a single life.
 //     A full 5-Bishop-plus-mirror clear generates roughly 1000-1500 gold
 //     total (chests + trash + boss rewards combined, before the
-//     difficulty ramp inflates it further) — at 500/exchange, hoarding
+//     difficulty ramp inflates it further) — at 350/exchange, hoarding
 //     ALL of one life's gold (skipping every bandage/merchant offer,
-//     which is a real risk, not a free choice) buys at most ~2-3.
+//     which is a real risk, not a free choice) buys at most ~3-4.
 //   - Shards never reset, but a full clear's boss rewards alone total
-//     roughly 25-30 (5-7 per kill x ~5 kills) — at 20/exchange, that's
-//     bottlenecked to about 1 exchange per clear even before any of it
+//     roughly 25-30 (5-7 per kill x ~5 kills) — at 14/exchange, that's
+//     bottlenecked to about 2 exchanges per clear even before any of it
 //     goes toward the dmg/cd upgrade tracks first (which it should).
 //
-// Net: at best ~1 echo per full clear sacrificed entirely to this NPC,
-// against 2+ from just finishing that same clear normally — deliberately
-// worse, so it reads as a release valve for leftover currency, not a
-// competing strategy.
-const ECHO_EXCHANGE_GOLD_COST = 500;
-const ECHO_EXCHANGE_SHARD_COST = 20;
+// Net: at best ~2 echo per full clear sacrificed entirely to this NPC,
+// against 2+ from just finishing that same clear normally — still no better
+// than simply playing on, so it stays a release valve for leftover currency
+// rather than a competing strategy. Cut from 500/20 alongside the tree's own
+// prices above: the shard leg was the binding constraint at ~1 per clear,
+// which made the valve too tight to be worth walking over to.
+const ECHO_EXCHANGE_GOLD_COST = 350;
+const ECHO_EXCHANGE_SHARD_COST = 14;
 
 // Death: gold no longer survives as gold at all — it (and any HP above the
 // fixed 100 base) converts to shards instead. This upgrade used to keep a
@@ -291,10 +315,29 @@ function generateRoomChain() {
         while (templateIndex === lastTemplateIndex) templateIndex = randInt(0, ROOM_TEMPLATES.length - 1);
       }
       lastTemplateIndex = templateIndex;
-      chain.push({ template: ROOM_TEMPLATES[templateIndex], biome: Math.random() < 0.5 ? 'trench' : 'dema', triggersBoss: null });
+      // Kind is rolled here, alongside biome, because both are the same kind
+      // of fact: something the entry knows about itself that the room object
+      // is told on entry (see enterRoomChainIndex). The very first room of a
+      // run is forced normal so a player always starts on familiar ground.
+      const isFirstRoomOfRun = chain.length === 0;
+      const kind = rollRoomKind(isFirstRoomOfRun);
+      chain.push({
+        template: ROOM_TEMPLATES[templateIndex],
+        biome: Math.random() < 0.5 ? 'trench' : 'dema',
+        triggersBoss: null,
+        kind,
+        challenge: kind === 'challenge' ? rollChallengeVariant() : null,
+      });
     }
     if (!defeatedThisCycle.includes(bishopKey)) {
-      chain[chain.length - 1].triggersBoss = bishopKey;
+      const gateRoom = chain[chain.length - 1];
+      gateRoom.triggersBoss = bishopKey;
+      // A Bishop's gate room stays an ordinary fight: stacking a special
+      // room's own rules and banner on top of the boss transition muddles
+      // both, and this is the one room whose exit doesn't lead to another
+      // room at all.
+      gateRoom.kind = 'normal';
+      gateRoom.challenge = null;
     }
   }
   return chain;
@@ -318,25 +361,49 @@ function enemyStatMultiplier() {
 // generic dungeon-fantasy trash), so tying them together would just be an
 // arbitrary coupling with no gameplay or thematic payoff. Enemy variety and
 // biome variety are independent axes.
+// A treasure/secret room fills nothing (see isPeacefulRoom) and an elite room
+// promotes exactly one of the SAME spawn points to a champion — the room's
+// layout and slot count never change, only what stands in them. A challenge
+// room's second wave is just another call against the same entry, so waves
+// need no spawn table of their own (see main.js's wave handling).
 function spawnEnemiesForRoom(index) {
   const entry = Game.roomChain[index];
   if (!entry) return [];
+  if (isPeacefulRoom(entry.kind)) return [];
+
   const statMul = enemyStatMultiplier();
-  return entry.template.enemies.map(([x, patrolMin, patrolMax]) => {
+  // One champion per elite room, at a random one of its spawn points, so it
+  // isn't always the same slot that's dangerous.
+  const eliteSlot = entry.kind === 'elite' ? randInt(0, entry.template.enemies.length - 1) : -1;
+
+  return entry.template.enemies.map(([x, patrolMin, patrolMax], slot) => {
     const EnemyClass = Math.random() < 0.5 ? Bat : GloriousGone;
-    return new EnemyClass(
+    const isElite = slot === eliteSlot;
+    const enemy = new EnemyClass(
       x * WORLD_SCALE,
       ROOM_GROUND_SPAWN_Y * WORLD_SCALE,
       patrolMin * WORLD_SCALE,
       patrolMax * WORLD_SCALE,
-      statMul,
+      isElite ? statMul * ELITE_STAT_MUL : statMul,
     );
+    if (isElite) enemy.makeElite();
+    return enemy;
   });
 }
 
+// Treasure and secret rooms replace the template's ordinary chests with a
+// single one of their own rather than adding a new interactable class: a
+// LootChest already carries proximity, prompt, draw and "opened" state, so a
+// reliquary is that same chest with a different variant tag (see openChest).
 function spawnChestsForRoom(index) {
   const entry = Game.roomChain[index];
   if (!entry) return [];
+  if (isPeacefulRoom(entry.kind)) {
+    const positions = entry.template.chests;
+    const x = positions[Math.floor(positions.length / 2)] || positions[0];
+    const variant = entry.kind === 'treasure' ? 'choice' : 'secret';
+    return [new LootChest(x * WORLD_SCALE, CHEST_GROUND_Y, variant)];
+  }
   return entry.template.chests.map((x) => new LootChest(x * WORLD_SCALE, CHEST_GROUND_Y));
 }
 
@@ -415,8 +482,10 @@ function persistSave(save) {
   localStorage.setItem(SAVE_KEY, JSON.stringify(save));
 }
 
+// Rounded to a clean ten so the obelisk shows prices a player can hold in
+// their head, rather than 1166.4.
 function hpUpgradeCost(hpLevel) {
-  return HP_UPGRADE_BASE_COST + hpLevel * HP_UPGRADE_COST_STEP;
+  return Math.round(HP_UPGRADE_BASE_COST * Math.pow(HP_UPGRADE_COST_MULT, hpLevel) / 10) * 10;
 }
 
 function dmgUpgradeCost(level) {
@@ -438,6 +507,26 @@ const Game = {
   player: null,
   enemies: [],
   chests: [],
+  // In-flight arrows from a ranged weapon (see player.js's attack block +
+  // main.js's wiring) — reset alongside enemies/chests at every point that
+  // resets those, so nothing lingers across a room/boss transition.
+  projectiles: [],
+
+  // --- Special-room state (see rooms.js). All of it is per-room and rebuilt
+  // from scratch by beginRoomKind() on every entry, so none of it needs its
+  // own reset at the run/hub/boss transitions the way enemies/chests do —
+  // entering any room overwrites the lot.
+  roomBanner: null,        // { label, sub, symbol, color } shown on arrival
+  roomBannerTimer: 0,
+  roomRewardGranted: false,
+  roomHitTaken: false,     // drives the 'nohit' challenge
+  pendingWaves: 0,         // waves still to spawn in a 'waves' challenge
+  waveIndex: 1,
+  bloodOfferOpen: false,
+  bloodAccepted: false,
+  treasureChoiceOpen: false,
+  lastRoomReward: null,    // what the last clear paid out, for the banner
+
   boss: null,
   isFinaleFight: false,
   // Which BISHOP_REGISTRY keys have been beaten so far THIS run — reset in
@@ -466,7 +555,7 @@ const Game = {
   // session already chose a face, so a reload can't silently swap it out
   // from under you — only re-rolling randomly when there's truly no saved
   // choice yet (a brand new save).
-  activeHeir: { name: 'Ты', hpMul: 1, speedMul: 1, label: 'начальный профиль', skinId: initialSave.heirSkinId || randInt(1, HEIR_SKIN_COUNT) },
+  activeHeir: { name: 'Ты', hpMul: 1, speedMul: 1, label: 'начальный профиль', key: null, skinId: initialSave.heirSkinId || randInt(1, HEIR_SKIN_COUNT) },
   pendingHeirs: null,
 
   // Heir variation is ALWAYS a fixed % of the game's base stats (BASE_MAX_HP
@@ -631,14 +720,16 @@ const Game = {
     // character before any heir was ever chosen (see activeHeir's own
     // top-of-object comment) — heirSkinId is gone now too, so there's no
     // saved face left to prefer over a new roll.
-    this.activeHeir = { name: 'Ты', hpMul: 1, speedMul: 1, label: 'начальный профиль', skinId: randInt(1, HEIR_SKIN_COUNT) };
+    this.activeHeir = { name: 'Ты', hpMul: 1, speedMul: 1, label: 'начальный профиль', key: null, skinId: randInt(1, HEIR_SKIN_COUNT) };
     this.enterHub();
   },
 
   enterHub() {
     this.room = createHubRoom();
-    this.player = new Player(this.room.spawn.x, this.room.spawn.y, this.currentMaxHp(), this.activeHeir.speedMul, this.currentCooldownMul(), this.accessorySlotCount(), this.activeHeir.skinId);
+    this.player = new Player(this.room.spawn.x, this.room.spawn.y, this.currentMaxHp(), this.activeHeir.speedMul, this.currentCooldownMul(), this.accessorySlotCount(), this.activeHeir.skinId, this.activeHeir.key);
     this.enemies = [];
+    this.projectiles = [];
+    this.clearRoomKindState();
     this.boss = null;
     this.runInProgress = false;
     this.camera.x = 0;
@@ -714,10 +805,12 @@ const Game = {
     this.roomChain = generateRoomChain();
     this.room = this.roomChain[0].template.create();
     this.room.biome = this.roomChain[0].biome;
-    this.player = new Player(this.room.spawn.x, this.room.spawn.y, this.currentMaxHp(), this.activeHeir.speedMul, this.currentCooldownMul(), this.accessorySlotCount(), this.activeHeir.skinId);
+    this.player = new Player(this.room.spawn.x, this.room.spawn.y, this.currentMaxHp(), this.activeHeir.speedMul, this.currentCooldownMul(), this.accessorySlotCount(), this.activeHeir.skinId, this.activeHeir.key);
     this.applyPrestigeStartingGear(this.player);
     this.enemies = spawnEnemiesForRoom(0);
     this.chests = spawnChestsForRoom(0);
+    this.projectiles = [];
+    this.clearRoomKindState();
     this.boss = null;
     this.camera.x = 0;
     this.state = 'run';
@@ -747,13 +840,177 @@ const Game = {
     this.roomIndex = index;
     this.room = entry.template.create();
     this.room.biome = entry.biome;
+    // Told to the room object the same way biome is: the room itself stays a
+    // plain geometry container, the caller hands it its identity.
+    this.room.kind = entry.kind;
     this.player.x = this.room.spawn.x;
     this.player.y = this.room.spawn.y;
     this.player.vx = 0;
     this.player.vy = 0;
     this.enemies = spawnEnemiesForRoom(index);
     this.chests = spawnChestsForRoom(index);
+    this.projectiles = [];
+    this.clearRoomKindState();
     this.camera.x = 0;
+    this.beginRoomKind(entry);
+  },
+
+  // Per-room special-kind state, reset on every room entry so nothing can
+  // leak from one room into the next. Everything here is plain fields on
+  // Game — the same place enemies/chests/projectiles already live.
+  beginRoomKind(entry) {
+    this.roomBanner = roomKindBanner(entry);
+    this.roomBannerTimer = this.roomBanner ? ROOM_BANNER_DURATION : 0;
+    this.roomRewardGranted = false;
+    this.roomHitTaken = false;
+    this.bloodAccepted = false;
+    this.pendingWaves = 0;
+    this.waveIndex = 1;
+
+    if (entry.kind === 'challenge' && entry.challenge === 'waves') {
+      this.pendingWaves = CHALLENGE_WAVE_COUNT - 1;
+    }
+    // The covenant is offered the moment the player arrives, before any
+    // fighting — that's the whole point, it's a decision about a room you
+    // haven't fought yet. Skipped entirely when the player is too hurt to
+    // be asked (see canOfferBloodCovenant).
+    if (entry.kind === 'blood' && canOfferBloodCovenant(this.player)) {
+      this.bloodOfferOpen = true;
+    } else {
+      this.bloodOfferOpen = false;
+    }
+  },
+
+  // Room-kind state is per-room, so every transition that leaves a chain room
+  // for something that ISN'T one (a Bishop arena, the mirror finale, a hub
+  // pause) clears it — the same discipline projectiles/enemies/chests already
+  // get at those points. Without it a panel raised in a room could still be
+  // flagged open during a boss fight and freeze the loop.
+  clearRoomKindState() {
+    this.roomBanner = null;
+    this.roomBannerTimer = 0;
+    this.bloodOfferOpen = false;
+    this.bloodAccepted = false;
+    this.treasureChoiceOpen = false;
+    this.treasureChest = null;
+    this.pendingWaves = 0;
+    this.roomRewardGranted = false;
+    this.roomHitTaken = false;
+  },
+
+  acceptBloodCovenant() {
+    if (!this.bloodOfferOpen) return;
+    this.bloodOfferOpen = false;
+    const cost = bloodCovenantCost(this.player);
+    // Never lethal — canOfferBloodCovenant already gates on HP, and this
+    // floor makes that guarantee structural rather than arithmetic.
+    this.player.hp = Math.max(1, this.player.hp - cost);
+    this.bloodAccepted = true;
+    Effects.hit(this.player.x + this.player.w / 2, this.player.y + this.player.h / 2, cost, '#b2453f');
+  },
+
+  declineBloodCovenant() {
+    this.bloodOfferOpen = false;
+  },
+
+  // Paid out once per room, when its win condition is met. Tier is decided
+  // by the room's kind and by whether its own rule was actually honoured —
+  // a challenge room the player got hit in still completes, it just doesn't
+  // pay the bonus, which is what makes the rule matter.
+  grantRoomClearReward() {
+    if (this.roomRewardGranted) return null;
+    const entry = this.roomChain[this.roomIndex];
+    if (!entry) return null;
+
+    let tier = 0;
+    if (entry.kind === 'elite') tier = 2;
+    else if (entry.kind === 'challenge') tier = this.challengeHonoured(entry) ? 1 : 0;
+    if (this.bloodAccepted) tier = Math.min(3, tier + 2);
+    if (tier === 0) return null;
+
+    this.roomRewardGranted = true;
+    return this.grantRoomReward(tier);
+  },
+
+  challengeHonoured(entry) {
+    if (entry.kind !== 'challenge') return false;
+    if (entry.challenge === 'nohit') return !this.roomHitTaken;
+    return true; // 'waves' is honoured simply by finishing both waves
+  },
+
+  // The single payout path every special room routes through, so reward
+  // scale lives in one table (ROOM_REWARD_TIERS) instead of being scattered
+  // across each room kind.
+  grantRoomReward(tier) {
+    const def = ROOM_REWARD_TIERS[tier];
+    if (!def) return null;
+    const gold = randInt(def.goldMin, def.goldMax);
+    this.addGold(gold);
+    this.player.arrows += def.arrows;
+    const granted = { tier, gold, arrows: def.arrows, shards: 0, item: null };
+
+    if (def.shards) {
+      this.addShards(def.shards);
+      granted.shards = def.shards;
+    }
+    if (def.gear) {
+      granted.item = this.grantRandomItem(def.rare);
+    }
+    return granted;
+  },
+
+  // Shared by room rewards and the treasure room's item option. `rare` takes
+  // the best of three rolls rather than introducing a separate rare-item
+  // generator — same trick applyPrestigeStartingGear already uses.
+  grantRandomItem(rare = false) {
+    const roll = Math.random();
+    if (roll < 0.4) {
+      const kind = Math.random() < 0.35 ? 'ranged' : 'melee';
+      let weapon = generateWeapon(kind);
+      if (rare) {
+        const candidates = [weapon, generateWeapon(kind), generateWeapon(kind)];
+        candidates.sort((a, b) => weaponScore(b) - weaponScore(a));
+        weapon = candidates[0];
+      }
+      this.player.unlockWeapon(weapon);
+      return weapon;
+    }
+    let gear = generateRandomGear();
+    if (rare) {
+      const candidates = [gear, generateRandomGear(), generateRandomGear()];
+      candidates.sort((a, b) => itemScore(b) - itemScore(a));
+      gear = candidates[0];
+    }
+    this.player.receiveGear(gear);
+    return gear;
+  },
+
+  // Treasure room's "choose one". Applying the pick and closing the panel is
+  // one step so the choice can never be taken twice.
+  applyTreasureChoice(id) {
+    if (!this.treasureChoiceOpen) return null;
+    this.treasureChoiceOpen = false;
+    if (this.treasureChest) {
+      this.treasureChest.opened = true;
+      this.treasureChest = null;
+    }
+    if (id === 'gold') {
+      this.addGold(TREASURE_GOLD);
+      return { id, detail: `+${TREASURE_GOLD} золота` };
+    }
+    if (id === 'arrows') {
+      this.player.arrows += TREASURE_ARROWS;
+      return { id, detail: `+${TREASURE_ARROWS} стрел` };
+    }
+    if (id === 'heal') {
+      // Routed through Player.heal() (not applied inline) so Survivor's
+      // weaker-healing passive — see heirs.js — applies here exactly the
+      // same way it applies to the bandage and the hub rest, from one place.
+      const healed = this.player.heal(this.player.maxHp * TREASURE_HEAL_FRACTION);
+      return { id, detail: `+${healed} HP` };
+    }
+    const item = this.grantRandomItem(false);
+    return { id, detail: item.name };
   },
 
   // Called once the current room's enemies are cleared and the player has
@@ -791,6 +1048,8 @@ const Game = {
     this.boss = descriptor.create(descriptor.spawnX * WORLD_SCALE, descriptor.spawnY * WORLD_SCALE, options);
     this.enemies = [];
     this.chests = [];
+    this.projectiles = [];
+    this.clearRoomKindState();
     this.camera.x = 0;
     this.state = 'boss';
     HUD.setBossVisible(true, this.boss.name);
@@ -843,6 +1102,20 @@ const Game = {
     this.player.vx = 0;
     this.player.vy = 0;
 
+    // Deliberately still numbers-only. Heir archetypes (heirs.js) exist as
+    // conditional BEHAVIOR — a resolveAttack() multiplier keyed on
+    // Game.player.archetype, a dash-time invulnerability window, a
+    // heal() penalty — not as a stat this snapshot could copy. MirrorBoss's
+    // own combat code (updatePhase1/runActivePattern) never reads
+    // Game.player or .archetype at all, only this plain object, so there is
+    // nothing here that COULD leak an archetype's behavior into her even by
+    // accident: she was never wired to look for it. Berserker's crowd bonus
+    // wouldn't mean anything to her anyway (updatePhase1 always fights a
+    // single target, the player), and Runner's dash-iframe is Player.update()
+    // reading its OWN this.archetype, code she doesn't run. If a future
+    // change ever gave her a real per-archetype ability, it would have to be
+    // added explicitly in boss.js — it could never arrive silently through
+    // this object.
     const snapshot = {
       maxHp: this.player.maxHp,
       weaponDamage: this.player.weapon.damage,
@@ -859,10 +1132,62 @@ const Game = {
     this.isFinaleFight = true;
     this.enemies = [];
     this.chests = [];
+    this.projectiles = [];
+    this.clearRoomKindState();
     this.camera.x = 0;
     this.state = 'boss';
     HUD.setBossVisible(true, this.boss.name);
     HUD.setChestPrompt(false);
+  },
+
+  // --- Test menu (title screen) -------------------------------------------
+  // Two shortcuts for trying out a specific fight or room kind without
+  // playing through a full run first. Both build the same fresh Player a
+  // real startRun() would, then hand off to the exact same state functions
+  // a real run already uses (enterMidBoss/enterMirrorFight/
+  // enterRoomChainIndex) — nothing about the fight or room itself is
+  // special-cased for this path, only reaching it is short-circuited. Never
+  // touches save.gold/shards/prestige/defeatedBishops, so it can't be used
+  // to cheat progress; it's purely a "go look at this" shortcut.
+
+  // bishopKey: one of MID_CHAIN_BOSS_DEFS's keys, or 'mirror' for the finale
+  // (Зеркало -> Блэрифейс, phase 1 then 2 — see boss.js's MirrorBoss).
+  debugFightBoss(bishopKey) {
+    this.player = new Player(0, 0, this.currentMaxHp(), this.activeHeir.speedMul, this.currentCooldownMul(), this.accessorySlotCount(), this.activeHeir.skinId, this.activeHeir.key);
+    this.applyPrestigeStartingGear(this.player);
+    this.isFinaleFight = false;
+    this.defeatedBishopsThisRun = new Set();
+    HUD.setWeaponVisible(true);
+    HUD.showScreen('game');
+    if (bishopKey === 'mirror') this.enterMirrorFight();
+    else this.enterMidBoss(MID_CHAIN_BOSS_DEFS[bishopKey]);
+  },
+
+  // kind: a rooms.js ROOM_KINDS key. challenge: required (and only
+  // meaningful) when kind === 'challenge' — one of CHALLENGE_VARIANTS's keys.
+  // Builds a genuine one-room chain (so roomChain/roomIndex stay in the same
+  // shape spawnEnemiesForRoom()/advanceRoom() already expect) rather than a
+  // parallel single-room code path.
+  debugTestRoom(kind, challenge) {
+    this.player = new Player(0, 0, this.currentMaxHp(), this.activeHeir.speedMul, this.currentCooldownMul(), this.accessorySlotCount(), this.activeHeir.skinId, this.activeHeir.key);
+    this.applyPrestigeStartingGear(this.player);
+    this.player.arrows = STARTING_ARROWS;
+    this.roomChain = [{
+      template: ROOM_TEMPLATES[randInt(0, ROOM_TEMPLATES.length - 1)],
+      biome: Math.random() < 0.5 ? 'trench' : 'dema',
+      triggersBoss: null,
+      kind,
+      challenge: kind === 'challenge' ? (challenge || rollChallengeVariant()) : null,
+    }];
+    this.roomIndex = 0;
+    this.defeatedBishopsThisRun = new Set();
+    this.isFinaleFight = false;
+    this.boss = null;
+    this.state = 'run';
+    HUD.setBossVisible(false);
+    HUD.setWeaponVisible(true);
+    HUD.showScreen('game');
+    this.enterRoomChainIndex(0);
   },
 
   // Common boss-death handling: gold + shards always drop. The finale fight
@@ -914,10 +1239,13 @@ const Game = {
     this.player.vy = 0;
     this.enemies = [];
     this.chests = [];
+    this.projectiles = [];
+    this.clearRoomKindState();
     this.boss = null;
     // Free partial rest — the run's only guaranteed healing, deliberately
-    // gated behind having just beaten a Bishop.
-    this.player.hp = Math.min(this.player.maxHp, this.player.hp + this.player.maxHp * HUB_REST_HEAL_FRACTION);
+    // gated behind having just beaten a Bishop. Through Player.heal() like
+    // every other heal in the game — see its comment on why (Survivor).
+    this.player.heal(this.player.maxHp * HUB_REST_HEAL_FRACTION);
     this.runInProgress = true;
     this.camera.x = 0;
     this.state = 'hub';
@@ -927,18 +1255,43 @@ const Game = {
     HUD.showScreen('game');
   },
 
-  // Opens a chest exactly once: gold always, then one roll for gear. The
-  // gear roll picks between a weapon (inventory, actively switchable) and a
-  // piece of passive equipment (auto-equipped if it beats what's worn —
-  // see Player.equipItem / equipment.js).
+  // Opens a chest exactly once: gold always, then an independent arrow roll,
+  // then one roll for gear. The gear roll picks between a weapon (melee or
+  // bow — each goes to its own slot, see Player.unlockWeapon) and a piece of
+  // passive equipment (auto-equipped if it beats what's worn — see
+  // equipment.js). Arrows are rolled separately from gear on purpose: ammo
+  // is a consumable, and making it compete with the gear slot would mean
+  // every top-up cost the player a chance at an actual item.
   openChest(chest) {
     if (chest.opened) return;
+
+    // Treasure room: the chest doesn't roll loot, it asks. Marked opened only
+    // once a choice is actually applied (see applyTreasureChoice), so closing
+    // the panel without picking leaves the reliquary still standing.
+    if (chest.variant === 'choice') {
+      this.treasureChoiceOpen = true;
+      this.treasureChest = chest;
+      return;
+    }
+    // Secret room: the find pays out at the top reward tier immediately —
+    // no choice, no fight, that's what makes stumbling into one feel like a
+    // find rather than another chest.
+    if (chest.variant === 'secret') {
+      chest.opened = true;
+      this.lastRoomReward = this.grantRoomReward(3);
+      return;
+    }
+
     chest.opened = true;
     this.addGold(randInt(CHEST_GOLD_MIN, CHEST_GOLD_MAX));
 
+    if (Math.random() < CHEST_ARROW_CHANCE) {
+      this.player.arrows += randInt(CHEST_ARROW_MIN, CHEST_ARROW_MAX);
+    }
+
     if (Math.random() >= CHEST_GEAR_DROP_CHANCE) return;
     if (Math.random() < CHEST_WEAPON_SHARE) {
-      this.player.unlockWeapon(generateWeapon());
+      this.player.unlockWeapon(generateWeapon(Math.random() < CHEST_BOW_SHARE ? 'ranged' : 'melee'));
     } else {
       this.player.receiveGear(generateRandomGear());
     }
@@ -1105,17 +1458,41 @@ const Game = {
     if (this.save.gold < BANDAGE_COST) return;
     if (this.player.hp >= this.player.maxHp) return; // no selling no-ops
     this.save.gold -= BANDAGE_COST;
-    this.player.hp = Math.min(this.player.maxHp, this.player.hp + this.player.maxHp * BANDAGE_HEAL_FRACTION);
+    this.player.heal(this.player.maxHp * BANDAGE_HEAL_FRACTION);
     persistSave(this.save);
   },
 
   bandageStatus() {
     const hurt = this.player ? this.player.hp < this.player.maxHp : false;
+    // The DISPLAYED percentage, not just the nominal one — Survivor's
+    // weaker healing (see heirs.js) means the merchant should quote the
+    // number the bandage will actually deliver, not the base figure every
+    // other heir sees. Nobody should have to buy one to find out.
+    const survivorMul = this.player && this.player.archetype === 'survivor' ? SURVIVOR_HEAL_MUL : 1;
     return {
       cost: BANDAGE_COST,
-      healPct: Math.round(BANDAGE_HEAL_FRACTION * 100),
+      healPct: Math.round(BANDAGE_HEAL_FRACTION * survivorMul * 100),
       canAfford: this.save.gold >= BANDAGE_COST && hurt,
       hurt,
+    };
+  },
+
+  // Repeatable, and unlike the bandage it has no "already full" no-op state —
+  // there's no arrow cap, so this is always a legitimate purchase.
+  buyArrows() {
+    if (!this.player) return;
+    if (this.save.gold < ARROW_BUNDLE_COST) return;
+    this.save.gold -= ARROW_BUNDLE_COST;
+    this.player.arrows += ARROW_BUNDLE_SIZE;
+    persistSave(this.save);
+  },
+
+  arrowBundleStatus() {
+    return {
+      cost: ARROW_BUNDLE_COST,
+      size: ARROW_BUNDLE_SIZE,
+      arrows: this.player ? this.player.arrows : 0,
+      canAfford: this.save.gold >= ARROW_BUNDLE_COST,
     };
   },
 
