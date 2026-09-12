@@ -14,6 +14,17 @@ const ENEMY_KNOCKBACK_DURATION = 0.16; // s
 // it reads at a glance against either biome.
 const ELITE_MARKER_COLOR = '#d1b13c';
 
+// How long a downed GloriousGone keeps collapsing on screen. This is PURELY
+// cosmetic and deliberately decoupled from `alive`, which goes false the
+// instant HP does: the room's clear check (Game.enemies.every(e => !e.alive)
+// in main.js), the one-shot gold payout, and the AI shutdown all key off
+// `alive` and none of them wait for this. Enemies are never spliced out of
+// Game.enemies mid-room — the array is replaced wholesale on the next room —
+// so a corpse animating here can't leak or be double-counted.
+// Shorter than the Bat's hand-drawn death (BAT_DEATH_HOLD): a grunt going
+// down is punctuation between swings, not a moment.
+const GRUNT_DEATH_DURATION = 0.55; // s
+
 function drawEliteMarker(ctx, entity, sx) {
   if (!entity.elite) return;
   const cx = sx + entity.w / 2;
@@ -70,6 +81,12 @@ class GloriousGone {
     this.knockbackTimer = 0;
     this.knockbackVx = 0;
     this.elite = false;
+
+    // Death visual, kept strictly separate from `alive` (see
+    // GRUNT_DEATH_DURATION). `dying` is true only while the body is still
+    // collapsing on screen; it never gates anything the game logic reads.
+    this.dying = false;
+    this.deathHold = 0;
   }
 
   // Elite rooms promote one spawn to a champion. The stat multiplier is
@@ -85,7 +102,21 @@ class GloriousGone {
   }
 
   update(dt, room, player) {
-    if (!this.alive) return;
+    // Dead for every purpose the game logic cares about — no AI, no contact
+    // damage, not targetable — while the body finishes falling over. Same
+    // split the Bat already uses for its death frames.
+    if (!this.alive) {
+      if (this.dying) {
+        this.deathHold += dt;
+        // The killing blow's flash has to keep decaying here too — it's set in
+        // takeDamage() and only ever decayed below, in the alive-only half of
+        // this method. Without this the corpse stays lit up red for the entire
+        // collapse, which reads as a rendering fault rather than a death.
+        if (this.hitFlash > 0) this.hitFlash -= dt;
+        if (this.deathHold >= GRUNT_DEATH_DURATION) this.dying = false;
+      }
+      return;
+    }
 
     this.knockbackTimer = Math.max(0, this.knockbackTimer - dt);
     if (this.knockbackTimer > 0) {
@@ -119,16 +150,25 @@ class GloriousGone {
     this.hp -= amount;
     this.hitFlash = 0.15;
     Effects.hit(this.x + this.w / 2, this.y + this.h / 2, amount, '#e8dca0');
+    Sfx.hit(amount);
     if (fromX !== null) {
       const dir = sign(this.x + this.w / 2 - fromX) || this.dir;
       this.knockbackVx = dir * ENEMY_KNOCKBACK_FORCE;
       this.knockbackTimer = ENEMY_KNOCKBACK_DURATION;
     }
-    if (this.hp <= 0) this.alive = false;
+    if (this.hp <= 0) {
+      this.alive = false;
+      this.dying = true;
+      this.deathHold = 0;
+      // A puff on the way down. burst() rather than hit() on purpose: hit()
+      // freezes the frame, and the kill's own hit-stop has already fired from
+      // the damage above — freezing twice for one blow feels like a stutter.
+      Effects.burst(this.x + this.w / 2, this.y + this.h / 2, '#6b5a4a', 10, 3 * WORLD_SCALE);
+    }
   }
 
   draw(ctx, camX) {
-    if (!this.alive) return;
+    if (!this.alive && !this.dying) return;
     const sx = this.x - camX;
 
     // Body art drawn oversized, anchored at the hitbox's feet — see
@@ -147,6 +187,7 @@ class GloriousGone {
       moving: Math.abs(this.vx) > 1,
       grounded: this.grounded,
       facing: this.dir,
+      dying: this.dying ? clamp(this.deathHold / GRUNT_DEATH_DURATION, 0, 1) : 0,
     }, (lctx) => {
       if (img) {
         // Tint follows the sprite's own alpha, not its bounding box — see
@@ -158,6 +199,11 @@ class GloriousGone {
         lctx.fillRect(0, 0, vw, vh);
       }
     });
+
+    // A corpse has no HP left to report and is no longer a threat to mark as
+    // elite, so the readouts stop with the AI rather than hanging in the air
+    // over a falling body.
+    if (!this.alive) return;
 
     // tiny hp sliver above the head — screen-locked, not part of the
     // wobble/tilt transform (same call as before, untouched by the animator).
@@ -391,6 +437,7 @@ class Bat {
     this.hp -= amount;
     this.hitFlash = 0.15;
     Effects.hit(this.x + this.w / 2, this.y + this.h / 2, amount, '#e8dca0');
+    Sfx.hit(amount);
     if (fromX !== null) {
       const dir = sign(this.x + this.w / 2 - fromX) || this.facing;
       this.knockbackVx = dir * ENEMY_KNOCKBACK_FORCE;

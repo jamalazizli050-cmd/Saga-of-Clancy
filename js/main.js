@@ -164,6 +164,16 @@ function renderInventoryPanel() {
     accessorySlots: player.accessorySlots,
     items: player.unequippedItems(),
     isRare: (entry) => Game.isRareItem(entry),
+    // Same pure-render-layer split as isRare: HUD is handed the finished
+    // comparison rather than reaching into Player to work out which slot an
+    // item would land in. slotOccupantFor() uses the exact slot resolution
+    // the equip click itself uses, so the deltas shown are the deltas you get.
+    compare: (entry) => {
+      const current = player.slotOccupantFor(entry);
+      return entry.kind === 'weapon'
+        ? compareWeapons(entry.item, current)
+        : compareGear(entry.item, current);
+    },
     onEquip: (entry) => {
       if (entry.kind === 'weapon') player.manualEquipWeapon(entry.item);
       else player.manualEquipGear(entry.item);
@@ -447,9 +457,13 @@ function update(dt) {
     if (Game.roomBannerTimer > 0) Game.roomBannerTimer -= dt;
 
     for (const enemy of Game.enemies) {
-      const wasAlive = enemy.alive;
       enemy.update(dt, room, player);
-      if (wasAlive && !enemy.alive && !enemy.goldGranted) {
+      // enemy.alive can already be false going into this loop — resolveAttack()
+      // (melee at the top of update(), arrows in the projectile loop above) runs
+      // before this loop and kills enemies directly. goldGranted alone (not a
+      // wasAlive snapshot taken after the kill already happened) is what stops
+      // a repeat payout, so it's safe to check on every enemy every frame.
+      if (!enemy.alive && !enemy.goldGranted) {
         enemy.goldGranted = true;
         Game.addGold(enemy.deathGold);
       }
@@ -515,12 +529,35 @@ function update(dt) {
     HUD.setBossVisible(true, Game.boss.name);
     HUD.setSmoke(Game.boss.inSmoke);
     if (!Game.boss.alive) {
-      Game.onBossDefeated();
-      return;
+      // Held back until the body has finished falling (see BOSS_DEATH_DURATION
+      // in boss.js) — onBossDefeated() swaps the whole screen out, so calling
+      // it on the same frame the Bishop dies means the kill is never actually
+      // seen. She is already fully dead to the game logic here: her AI is
+      // stopped, she can't be hit again, and the reward still pays exactly
+      // once, just after the beat instead of during it.
+      if (Game.boss.dying) {
+        // Her last arrow can still be in the air, and the fight is already
+        // decided — letting it land during the death animation would turn a
+        // win the player has earned into a death. Clearing only 'enemy'
+        // arrows leaves the player's own shots alone.
+        if (Game.projectiles.some((a) => a.owner === 'enemy')) {
+          Game.projectiles = Game.projectiles.filter((a) => a.owner !== 'enemy');
+        }
+      } else {
+        Game.onBossDefeated();
+        return;
+      }
     }
   }
 
-  if (player.hp <= 0) {
+  // A Bishop already on the floor means the fight is won, so the player can't
+  // lose it during her death animation. This used to be free: the boss branch
+  // above returned on the same frame she died, so a mutual kill resolved as a
+  // victory before this check was ever reached. Now that the branch holds for
+  // the animation instead of returning, that has to be said out loud — or the
+  // hold would quietly turn a won fight into a death.
+  const bossDownAndFalling = Game.state === 'boss' && Game.boss && !Game.boss.alive;
+  if (player.hp <= 0 && !bossDownAndFalling) {
     Game.onPlayerDeath();
     return;
   }

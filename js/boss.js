@@ -9,6 +9,17 @@
 // Subclasses supply only their fear mechanic: an update() and a draw() that
 // leans on the drawBody/drawStatusBar/drawTelegraph helpers.
 
+// How long a defeated Bishop stays on screen collapsing before the victory
+// sequence takes over. Twice a grunt's (GRUNT_DEATH_DURATION in enemy.js) on
+// purpose: this is the end of a fight, not punctuation between swings.
+//
+// Unlike a grunt's, this one is load-bearing for pacing rather than purely
+// cosmetic — main.js holds Game.onBossDefeated() until it elapses, so the
+// player actually sees the kill instead of being cut straight to a screen.
+// What it does NOT delay: `alive` going false (so she stops attacking, stops
+// being targetable, and can't be killed twice the instant HP hits 0).
+const BOSS_DEATH_DURATION = 1.1; // s
+
 class BossBase {
   // config: { bishopKey, defaultName, w, h, baseHp, speed, goldReward }
   // options: { name, statMul } — the NG+ display name and per-cycle buff.
@@ -34,6 +45,12 @@ class BossBase {
     this.speed = (config.speed || 100) * WORLD_SCALE;
     this.hitFlash = 0;
     this.anim = new SpriteAnimator();
+
+    // Death visual only — see BOSS_DEATH_DURATION and onDepleted(). `alive`
+    // still flips the instant HP runs out, so nothing about defeat-tracking,
+    // reward payout or "can't be killed twice" waits on this.
+    this.dying = false;
+    this.deathHold = 0;
   }
 
   // Every subclass calls this once per update(), right after stepPhysics()
@@ -55,6 +72,7 @@ class BossBase {
     this.hp = Math.max(0, this.hp - amount);
     this.hitFlash = 0.15;
     Effects.hit(this.x + this.w / 2, this.y + this.h / 2, amount, '#f0d878', true);
+    Sfx.hit(amount, true);
     if (this.hp <= 0) this.onDepleted();
   }
 
@@ -62,6 +80,34 @@ class BossBase {
   // to reimplement takeDamage's bookkeeping.
   onDepleted() {
     this.alive = false;
+    this.dying = true;
+    this.deathHold = 0;
+    this.vx = 0;
+    // Bigger and brighter than a grunt's death puff, in the Bishops' own gold
+    // — this is the moment the fight is won. burst() not hit(): the killing
+    // blow's hit-stop already fired in takeDamage(), and a second freeze on
+    // the same blow reads as a stutter.
+    Effects.burst(this.x + this.w / 2, this.y + this.h / 2, '#f0d878', 26, 10 * WORLD_SCALE);
+  }
+
+  // Called by every subclass's update() in place of the bare `if (!this.alive)
+  // return;` guard it used to have, so a downed Bishop keeps ticking her
+  // collapse while doing nothing else. Mirrors how Bat.update() handles its
+  // own death frames.
+  updateDeath(dt) {
+    if (!this.dying) return;
+    this.deathHold += dt;
+    // Same reason as GloriousGone's: hitFlash is set by the killing blow and
+    // is only decayed in each subclass's alive-only update path, so without
+    // this the body stays tinted for the whole collapse.
+    if (this.hitFlash > 0) this.hitFlash -= dt;
+    if (this.deathHold >= BOSS_DEATH_DURATION) this.dying = false;
+  }
+
+  // 0 while alive, 0->1 across the collapse. Handed to SpriteAnimator.draw()
+  // via drawBody(), which is the one place every Bishop's body is painted.
+  deathProgress() {
+    return this.dying ? clamp(this.deathHold / BOSS_DEATH_DURATION, 0, 1) : 0;
   }
 
   // Overridden by MirrorBoss (phase 2 only) — see its comment. False here
@@ -115,6 +161,7 @@ class BossBase {
       grounded: this.grounded,
       facing: this.facing,
       shaking,
+      dying: this.deathProgress(),
     }, (lctx) => {
       if (img) {
         // Tinted fairly strongly (not a subtle hint like the player's dash
@@ -183,7 +230,7 @@ class KeonsBoss extends BossBase {
   }
 
   update(dt, room, player) {
-    if (!this.alive) return;
+    if (!this.alive) { this.updateDeath(dt); return; }
     // Only needed now that drawBody() renders a directional sprite instead
     // of a symmetric rectangle — she/he never turned to face the player
     // before because there was nothing visual riding on it.
@@ -226,13 +273,13 @@ class KeonsBoss extends BossBase {
     if (this.hitFlash > 0) this.hitFlash -= dt;
 
     if (this.contactCooldown <= 0 && aabbIntersect(this, player)) {
-      player.takeDamage(this.contactDamage);
+      player.takeDamage(this.contactDamage, this.x + this.w / 2);
       this.contactCooldown = 0.7;
     }
   }
 
   draw(ctx, camX) {
-    if (!this.alive) return;
+    if (!this.alive && !this.dying) return;
     this.drawBody(ctx, camX, this.hitFlash > 0 ? '#e8c0a0' : (this.inSmoke ? '#4a5248' : '#5a4a5e'));
   }
 }
@@ -280,7 +327,7 @@ class SakarverBoss extends BossBase {
   }
 
   update(dt, room, player) {
-    if (!this.alive) return;
+    if (!this.alive) { this.updateDeath(dt); return; }
     // See KeonsBoss.update()'s identical line: drawBody() now needs a real
     // facing to pick the mirrored sprite or not.
     this.faceToward(player);
@@ -308,13 +355,13 @@ class SakarverBoss extends BossBase {
     // her between attacks is safe, keeping the danger tied to her actual
     // attack cadence (the thing that's accelerating) rather than passive touch.
     if (this.lungeActiveTimer > 0 && this.contactCooldown <= 0 && aabbIntersect(this, player)) {
-      player.takeDamage(this.attackDamage);
+      player.takeDamage(this.attackDamage, this.x + this.w / 2);
       this.contactCooldown = 0.5;
     }
   }
 
   draw(ctx, camX) {
-    if (!this.alive) return;
+    if (!this.alive && !this.dying) return;
     this.drawBody(ctx, camX, this.hitFlash > 0 ? '#e8c0a0' : '#4a3a4e');
 
     // "Getting faster" tell: a thin red bar that fills as her cooldown
@@ -361,7 +408,7 @@ class LisdenBoss extends BossBase {
   }
 
   update(dt, room, player) {
-    if (!this.alive) return;
+    if (!this.alive) { this.updateDeath(dt); return; }
     // See KeonsBoss.update()'s identical line — also covers her decoys,
     // which render via drawBody() reusing the real Lisden's current facing.
     this.faceToward(player);
@@ -394,7 +441,7 @@ class LisdenBoss extends BossBase {
     if (this.hitFlash > 0) this.hitFlash -= dt;
 
     if (this.contactCooldown <= 0 && aabbIntersect(this, player)) {
-      player.takeDamage(this.contactDamage);
+      player.takeDamage(this.contactDamage, this.x + this.w / 2);
       this.contactCooldown = 0.7;
     }
   }
@@ -416,8 +463,17 @@ class LisdenBoss extends BossBase {
     this.cloneFlash = 0.25;
   }
 
+  // The illusion dies with her. Without this the decoys would collapse too
+  // (drawBody applies the death transform to every silhouette it paints,
+  // decoys included), showing three bodies falling when only ever one was
+  // real — and leaving fakes standing in an arena with no one to cast them.
+  onDepleted() {
+    this.decoys = [];
+    super.onDepleted();
+  }
+
   draw(ctx, camX) {
-    if (!this.alive) return;
+    if (!this.alive && !this.dying) return;
 
     const idle = this.cloneFlash > 0 ? '#bcb4d6' : '#5a4a6e';
     // Decoys first — the identical drawBody call as the real one (they're
@@ -462,7 +518,7 @@ class ReysdroBoss extends BossBase {
   }
 
   update(dt, room, player) {
-    if (!this.alive) return;
+    if (!this.alive) { this.updateDeath(dt); return; }
 
     const dx = player.x - this.x;
     this.phaseTimer -= dt;
@@ -502,7 +558,7 @@ class ReysdroBoss extends BossBase {
         const swinger = { x: this.x, y: this.y, w: this.w, h: this.h, facing: this.strikeDir };
         const hitbox = computeMeleeHitbox(swinger, REYSDRO_REACH, this.attackDamage);
         if (aabbIntersect(hitbox, player)) {
-          player.takeDamage(this.attackDamage);
+          player.takeDamage(this.attackDamage, this.x + this.w / 2);
           this.struckThisSwing = true;
         }
       }
@@ -518,7 +574,7 @@ class ReysdroBoss extends BossBase {
   }
 
   draw(ctx, camX) {
-    if (!this.alive) return;
+    if (!this.alive && !this.dying) return;
     // Shake during the wind-up/commit read (the "telegraph" — the anticipation
     // that's either honest or a lie), not during the strike itself.
     const telegraphShaking = this.phase === 'windup' || this.phase === 'commit';
@@ -570,7 +626,7 @@ class VetomoBoss extends BossBase {
   }
 
   update(dt, room, player) {
-    if (!this.alive) return;
+    if (!this.alive) { this.updateDeath(dt); return; }
 
     // Bank decays continuously — this is what makes paced damage safe.
     this.recentDamage = Math.max(0, this.recentDamage - VETOMO_DECAY_PER_SEC * dt);
@@ -583,7 +639,7 @@ class VetomoBoss extends BossBase {
       if (this.windupTimer <= 0) {
         // Counter lands now, using damage locked in when the windup began.
         const hitbox = computeMeleeHitbox(this, VETOMO_REACH, this.pendingCounterDamage);
-        if (aabbIntersect(hitbox, player)) player.takeDamage(this.pendingCounterDamage);
+        if (aabbIntersect(hitbox, player)) player.takeDamage(this.pendingCounterDamage, this.x + this.w / 2);
       }
     } else {
       this.counterTimer -= dt;
@@ -614,7 +670,7 @@ class VetomoBoss extends BossBase {
   }
 
   draw(ctx, camX) {
-    if (!this.alive) return;
+    if (!this.alive && !this.dying) return;
     const charging = this.windupTimer > 0;
 
     // Fear-of-success beat made visible on her body, not just the status
@@ -740,7 +796,7 @@ class MirrorBoss extends BossBase {
   }
 
   update(dt, room, player) {
-    if (!this.alive) return;
+    if (!this.alive) { this.updateDeath(dt); return; }
 
     if (this.transforming) {
       this.transformTimer -= dt;
@@ -769,7 +825,7 @@ class MirrorBoss extends BossBase {
       if (!this.hitLandedThisSwing) {
         const hitbox = computeMeleeHitbox(this, this.weaponRange, this.weaponDamage);
         if (aabbIntersect(hitbox, player)) {
-          player.takeDamage(hitbox.damage);
+          player.takeDamage(hitbox.damage, this.x + this.w / 2);
           this.hitLandedThisSwing = true;
         }
       }
@@ -832,7 +888,7 @@ class MirrorBoss extends BossBase {
       if (!this.hitLandedThisPattern) {
         const hitbox = computeMeleeHitbox(this, this.weaponRange, Math.round(this.weaponDamage * BLAIREFACE_DASH_DAMAGE_MUL));
         if (aabbIntersect(hitbox, player)) {
-          player.takeDamage(hitbox.damage);
+          player.takeDamage(hitbox.damage, this.x + this.w / 2);
           this.hitLandedThisPattern = true;
         }
       }
@@ -849,7 +905,7 @@ class MirrorBoss extends BossBase {
           const cx = this.x + this.w / 2, cy = this.y + this.h / 2;
           const pcx = player.x + player.w / 2, pcy = player.y + player.h / 2;
           if (Math.hypot(cx - pcx, cy - pcy) <= BLAIREFACE_AOE_RADIUS) {
-            player.takeDamage(Math.round(this.weaponDamage * BLAIREFACE_AOE_DAMAGE_MUL));
+            player.takeDamage(Math.round(this.weaponDamage * BLAIREFACE_AOE_DAMAGE_MUL), cx);
           }
           this.hitLandedThisPattern = true;
         }
@@ -867,7 +923,7 @@ class MirrorBoss extends BossBase {
         if (!this.hitLandedThisPattern) {
           const hitbox = computeMeleeHitbox(this, this.weaponRange * BLAIREFACE_HEAVY_RANGE_MUL, Math.round(this.weaponDamage * BLAIREFACE_HEAVY_DAMAGE_MUL));
           if (aabbIntersect(hitbox, player)) {
-            player.takeDamage(hitbox.damage);
+            player.takeDamage(hitbox.damage, this.x + this.w / 2);
           }
           this.hitLandedThisPattern = true;
         }
@@ -936,9 +992,11 @@ class MirrorBoss extends BossBase {
   }
 
   // Phase 1 ending doesn't kill her — it triggers the Blairface transform.
+  // Phase 2 defers to the base, so Blairface gets the same collapse every
+  // other Bishop does rather than blinking out.
   onDepleted() {
     if (this.phase === 1) this.beginTransformation();
-    else this.alive = false;
+    else super.onDepleted();
   }
 
   beginTransformation() {
@@ -975,7 +1033,7 @@ class MirrorBoss extends BossBase {
   // asked for; a dedicated Blairface sprite can replace the tint later
   // without touching anything else here.
   draw(ctx, camX) {
-    if (!this.alive) return;
+    if (!this.alive && !this.dying) return;
     const sx = this.x - camX;
 
     const telegraphing = this.phase === 2 && (

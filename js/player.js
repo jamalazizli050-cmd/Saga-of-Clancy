@@ -314,6 +314,20 @@ class Player {
     return items;
   }
 
+  // What a bag entry would actually displace if equipped right now — the
+  // inventory card compares against this. Deliberately routed through the
+  // exact same slot resolution manualEquipGear() uses (including
+  // pickAccessoryTargetSlot's "worst combat accessory" rule), so the
+  // comparison shown can never promise a swap different from the one the
+  // click performs. Returns null when the target slot is empty.
+  slotOccupantFor(entry) {
+    if (entry.kind === 'weapon') return isRangedWeapon(entry.item) ? this.bow : this.weapon;
+    const slot = entry.item.slotType === 'accessory'
+      ? this.pickAccessoryTargetSlot()
+      : entry.item.slotType;
+    return this.equipment[slot] || null;
+  }
+
   // Permanent removal for the scrapper (Game.scrapItem) — entry must be one
   // returned by unequippedItems(), i.e. never an active weapon/bow or
   // anything currently worn.
@@ -413,6 +427,10 @@ class Player {
       this.attackActiveTimer = swing.duration;
       this.attackSwingArc = swing.arc;
       this.pendingHitbox = computeMeleeHitbox(this, w.range, w.damage);
+      // The whoosh of the blade moving, which is exactly this moment. Whether
+      // it CONNECTS is a different event with a different sound, fired from
+      // the damage handlers instead — see audio.js.
+      Sfx.swing(w);
     }
 
     // --- bow shot (RIGHT mouse button) ---
@@ -439,6 +457,7 @@ class Player {
       // extend the shot before its arc grounds it.
       const spawnY = this.y + this.h * 0.32;
       this.pendingProjectile = { x: spawnX, y: spawnY, facing: this.facing, damage: b.damage, range: b.range, color: b.color };
+      Sfx.bowRelease(b);
     }
 
     stepPhysics(this, dt, room);
@@ -463,6 +482,7 @@ class Player {
     this.invulnTimer = HIT_INVULN_DURATION;
 
     Effects.hit(this.x + this.w / 2, this.y + this.h / 2, mitigated, '#e8a0a0');
+    Sfx.playerHurt();
     const dir = fromX !== null ? (sign(this.x + this.w / 2 - fromX) || -this.facing) : -this.facing;
     this.knockbackVx = dir * PLAYER_KNOCKBACK_FORCE;
     this.knockbackTimer = PLAYER_KNOCKBACK_DURATION;

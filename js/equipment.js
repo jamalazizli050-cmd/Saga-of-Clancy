@@ -206,3 +206,56 @@ function describeItemFull(item) {
   const pct = Math.round(itemQuality(item) * 100);
   return `${item.name}\n${item.label}\nКачество: ${pct}%`;
 }
+
+// Human-readable kind, for the inventory card's type line. Weapons answer
+// this from weapons.js's own `type` field instead — see describeWeaponKind().
+const GEAR_KIND_LABELS = {
+  helm: 'Шлем',
+  chest: 'Нагрудник',
+  accessory: 'Аксессуар',
+};
+
+function describeGearKind(item) {
+  return GEAR_KIND_LABELS[item.slotType] || 'Снаряжение';
+}
+
+// How each mod reads in a comparison, and which direction is an improvement.
+// Every gear mod stores its raw number so that HIGHER is always better — a
+// damageReduction of 0.06 beats 0.02 — so the colour (dir) is a plain
+// ascending comparison for all six.
+//
+// The displayed SIGN is a separate question for the two "reduction" stats.
+// They're written on the item itself as a negative ("-6% вх. урон"), so
+// reporting an improvement as "+2% вх. урон" would read as taking MORE
+// damage, which is exactly backwards. `invertSign` flips only the printed
+// sign for those two, leaving the colour keyed to the real direction.
+const EQUIP_MOD_COMPARE = [
+  { key: 'damageBonus', label: 'урон', pct: true },
+  { key: 'damageReduction', label: 'вх. урон', pct: true, invertSign: true },
+  { key: 'bonusHp', label: 'HP', pct: false },
+  { key: 'cooldownReduction', label: 'кулдауны', pct: true, invertSign: true },
+  { key: 'speedBonus', label: 'скорость', pct: true },
+  { key: 'goldFind', label: 'золото', pct: false, pctValue: true },
+];
+
+// Stat-by-stat diff of `candidate` against whatever is currently in the slot
+// it would go into. Returns [{ label, dir }] where dir is +1 better, -1 worse
+// — the inventory card colors on `dir` and never re-derives the comparison
+// itself (HUD stays a pure render layer).
+//
+// `current` null means the slot is empty: everything the candidate rolls is a
+// straight gain, so every nonzero mod is reported as an improvement rather
+// than the item being described as having no effect.
+function compareGear(candidate, current) {
+  const out = [];
+  for (const { key, label, pct, pctValue, invertSign } of EQUIP_MOD_COMPARE) {
+    const a = candidate.mods[key] || 0;
+    const b = current ? (current.mods[key] || 0) : 0;
+    const delta = a - b;
+    if (Math.abs(delta) < 1e-9) continue;
+    const shown = pct || pctValue ? `${Math.abs(Math.round(delta * 100))}%` : `${Math.abs(Math.round(delta))}`;
+    const positive = invertSign ? delta < 0 : delta > 0;
+    out.push({ label: `${positive ? '+' : '−'}${shown} ${label}`, dir: delta > 0 ? 1 : -1 });
+  }
+  return out;
+}

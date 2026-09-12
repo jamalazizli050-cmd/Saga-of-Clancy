@@ -109,7 +109,7 @@ function buildSandbox() {
 // Same load order as index.html's <script> tags, minus main.js (we drive
 // Game's methods directly instead of running the render loop).
 const FILES = [
-  'js/utils.js', 'js/effects.js', 'js/spriteAnim.js', 'js/tiles.js', 'js/input.js', 'js/weapons.js', 'js/projectile.js', 'js/equipment.js', 'js/icons.js',
+  'js/utils.js', 'js/effects.js', 'js/audio.js', 'js/spriteAnim.js', 'js/tiles.js', 'js/input.js', 'js/weapons.js', 'js/projectile.js', 'js/equipment.js', 'js/icons.js',
   'js/world.js', 'js/player.js', 'js/enemy.js', 'js/boss.js', 'js/bishops.js',
   'js/chest.js', 'js/rooms.js', 'js/heirs.js', 'js/hub.js', 'js/hud.js', 'js/game.js',
 ];
@@ -156,6 +156,7 @@ const EXPORT_NAMES = [
   'IDLE_BOB_AMPLITUDE', 'IDLE_BOB_RATE', 'AIR_STRETCH_X', 'AIR_STRETCH_Y',
   'LAND_SQUASH_X', 'LAND_SQUASH_Y', 'LAND_SQUASH_DURATION', 'TELEGRAPH_SHAKE_AMPLITUDE',
   'GloriousGone', 'LootChest',
+  'Sfx', 'SFX_HIT_THROTTLE', 'SFX_HURT_COOLDOWN', 'SFX_MASTER_GAIN',
 ];
 
 function loadGame(root) {

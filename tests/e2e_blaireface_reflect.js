@@ -100,14 +100,24 @@ function check(label, cond, detail) {
   check('фаза 2: ЛКМ (меч) продолжает наносить нормальный урон', afterMelee < hpBeforeMelee, { hpBeforeMelee, afterMelee });
 
   // --- Смерть Блэрифейс и возврат ---
+  //
+  // Переход к экрану победы намеренно придержан на время анимации смерти
+  // (BOSS_DEATH_DURATION в boss.js) — иначе кадр победы съедает сам момент
+  // убийства. Логически она мертва сразу: alive = false, ИИ выключен.
   await page.evaluate(() => { Game.boss.hp = 0; Game.boss.onDepleted(); });
-  await page.waitForTimeout(400);
-  const afterDeath = await page.evaluate(() => ({ alive: Game.boss ? Game.boss.alive : null, state: Game.state }));
+  await page.waitForTimeout(200);
+  const afterDeath = await page.evaluate(() => ({
+    alive: Game.boss ? Game.boss.alive : null,
+    dying: Game.boss ? Game.boss.dying : null,
+    state: Game.state,
+  }));
   check('смерть фазы 2 окончательна (без второй трансформации)', afterDeath.alive === false, afterDeath);
+  check('тело ещё падает, экран победы придержан', afterDeath.dying === true && afterDeath.state === 'boss', afterDeath);
 
-  await page.waitForTimeout(500);
+  // Заведомо дольше анимации смерти.
+  await page.waitForTimeout(1600);
   const finalState = await page.evaluate(() => Game.state);
-  check('победа над Блэрифейс уводит из боя (переход на экран победы/цикла)', finalState !== 'boss', finalState);
+  check('после анимации победа над Блэрифейс уводит из боя (экран победы/цикла)', finalState !== 'boss', finalState);
 
   console.log('\nCONSOLE ERRORS:', errors.length ? JSON.stringify(errors) : 'нет');
   if (errors.length) failures++;

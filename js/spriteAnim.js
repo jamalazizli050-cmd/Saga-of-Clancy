@@ -24,6 +24,20 @@ const LAND_SQUASH_DURATION = 0.13;                   // s, decays back to normal
 
 const TELEGRAPH_SHAKE_AMPLITUDE = 1.5 * WORLD_SCALE; // px, random jitter while a boss telegraphs
 
+// --- Death collapse -------------------------------------------------------
+//
+// The visual half of dying, shared by GloriousGone and every boss (the Bat
+// is the exception — it has real hand-drawn death frames in its strip, so it
+// plays those instead; see BAT_ANIMS.dying). The logical half is NOT here and
+// must not be confused with it: `alive = false` is set the instant HP runs
+// out, which is what stops the AI, opens the room, and pays the reward. This
+// only governs how long the body stays on screen afterwards.
+const DEATH_FALL_ANGLE = (82 * Math.PI) / 180; // how far the body has toppled by the end
+// Fade only over the last stretch: a body that starts dissolving the moment
+// it's hit reads as "despawning", not "dying". It has to visibly fall first.
+const DEATH_FADE_START = 0.55; // fraction of the animation before alpha moves at all
+const DEATH_SETTLE_SQUASH = 0.12; // how much the body flattens as it lands
+
 // --- Sprite tinting (hit flash, dash glow, Blairface's palette swap) -------
 //
 // Tinting "only the sprite's own pixels" needs `source-atop`, but that
@@ -119,9 +133,15 @@ class SpriteAnimator {
   // Wraps `drawFn(ctx)` — which must paint the entity as if its top-left
   // corner were (0,0) at size (w,h) — in a transform stack centered on the
   // sprite's own middle, so drawFn never has to know about position, scale,
-  // or rotation. `opts`: { moving, grounded, facing (1|-1), shaking }.
+  // or rotation. `opts`: { moving, grounded, facing (1|-1), shaking, dying }.
+  //
+  // `dying` is the death collapse's progress, 0 (alive) to 1 (gone). Any
+  // value above 0 replaces the locomotion transform entirely — a corpse
+  // doesn't walk-bounce or idle-bob — and pivots the rotation at the feet
+  // rather than the sprite's middle, which is the difference between a body
+  // toppling over and one spinning in place.
   draw(ctx, sx, y, w, h, opts, drawFn) {
-    const { moving = false, grounded = true, facing = 1, shaking = false } = opts;
+    const { moving = false, grounded = true, facing = 1, shaking = false, dying = 0 } = opts;
     const cx = sx + w / 2;
     const cy = y + h / 2;
 
@@ -129,8 +149,22 @@ class SpriteAnimator {
     let rotation = 0;
     let scaleX = 1;
     let scaleY = 1;
+    let alpha = 1;
+    // Rotation pivot, as an offset from the sprite's center. 0 keeps the
+    // original center-pivot behaviour for every living entity; the death
+    // branch moves it to the feet.
+    let pivotY = 0;
 
-    if (!grounded) {
+    if (dying > 0) {
+      const p = clamp(dying, 0, 1);
+      // Squared, so the body tips slowly and then goes over fast — what
+      // falling under its own weight looks like. A linear sweep reads as a
+      // hand rotating a prop.
+      rotation = facing * DEATH_FALL_ANGLE * p * p;
+      scaleY = 1 - DEATH_SETTLE_SQUASH * p;
+      alpha = p < DEATH_FADE_START ? 1 : 1 - (p - DEATH_FADE_START) / (1 - DEATH_FADE_START);
+      pivotY = h / 2;
+    } else if (!grounded) {
       scaleX = AIR_STRETCH_X;
       scaleY = AIR_STRETCH_Y;
     } else if (this.landTimer > 0) {
@@ -153,8 +187,14 @@ class SpriteAnimator {
 
     ctx.save();
     ctx.translate(cx + shakeX, cy + offsetY + shakeY);
+    // pivotY is 0 for everything that isn't dying, so these two translates
+    // cancel and the living path is bit-for-bit the center-pivot rotate it
+    // always was.
+    ctx.translate(0, pivotY);
     ctx.rotate(rotation);
+    ctx.translate(0, -pivotY);
     ctx.scale(scaleX, scaleY);
+    if (alpha < 1) ctx.globalAlpha *= alpha;
     ctx.translate(-w / 2, -h / 2);
     drawFn(ctx);
     ctx.restore();

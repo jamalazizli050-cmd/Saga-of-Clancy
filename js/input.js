@@ -12,6 +12,12 @@ const Input = {
 
   init() {
     window.addEventListener('keydown', (e) => {
+      // Audio can't exist before the user has interacted with the page
+      // (autoplay policy), so this and the mousedown handler below are where
+      // the whole sound layer comes to life — see audio.js. Safe to call on
+      // every input: the first one builds the context, later ones only
+      // resume it if the browser suspended it.
+      Sfx.unlock();
       if (!this.keys[e.code]) this.justPressed[e.code] = true;
       this.keys[e.code] = true;
       // Prevent the page from scrolling on Space/Arrow keys while playing.
@@ -31,6 +37,7 @@ const Input = {
     // does. Left is melee attack (alongside KeyJ), right fires the bow — see
     // Player.update()'s two independent attack blocks.
     window.addEventListener('mousedown', (e) => {
+      Sfx.unlock(); // see the keydown handler above
       const code = MOUSE_BUTTON_CODES[e.button];
       if (!code) return;
       if (!this.keys[code]) this.justPressed[code] = true;

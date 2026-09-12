@@ -117,6 +117,35 @@ function describeWeaponFull(w) {
   return `${w.name}\nУрон ${w.damage} · КД ${w.cooldown}с · ${rangeLabel} ${Math.round(w.range)}\n${isRareWeapon(w) ? 'Редкое' : 'Обычное'}`;
 }
 
+// Kind line for the inventory card. Read off `type` rather than the name's
+// noun so it stays locale-independent, same reason generateWeapon() stores
+// `noun` separately for the icon picker.
+function describeWeaponKind(w) {
+  return isRangedWeapon(w) ? 'Лук' : 'Оружие';
+}
+
+// Stat-by-stat diff against the weapon currently in the same slot (melee vs
+// melee, bow vs bow — they never displace each other). Same [{label, dir}]
+// shape compareGear() returns, so the inventory card renders both the same
+// way. Cooldown is the one axis where a LOWER number is the better one.
+function compareWeapons(candidate, current) {
+  if (!current) return [];
+  const out = [];
+
+  const dmg = candidate.damage - current.damage;
+  if (dmg !== 0) out.push({ label: `${dmg > 0 ? '+' : '−'}${Math.abs(dmg)} урон`, dir: dmg > 0 ? 1 : -1 });
+
+  const cd = Math.round((candidate.cooldown - current.cooldown) * 100) / 100;
+  if (cd !== 0) out.push({ label: `${cd > 0 ? '+' : '−'}${Math.abs(cd)}с КД`, dir: cd < 0 ? 1 : -1 });
+
+  const range = Math.round(candidate.range - current.range);
+  if (range !== 0) {
+    const label = isRangedWeapon(candidate) ? 'скор. стрелы' : 'дистанция';
+    out.push({ label: `${range > 0 ? '+' : '−'}${Math.abs(range)} ${label}`, dir: range > 0 ? 1 : -1 });
+  }
+  return out;
+}
+
 let weaponUid = 0;
 
 // kind: 'melee' | 'ranged'. Both roll against the SAME budget/axes — a bow

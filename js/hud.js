@@ -454,9 +454,45 @@ const HUD = {
   // list — same {kind:'weapon'|'gear', item} entry shape either way (see
   // Player.unequippedItems). `extra` is an optional second line (e.g. a
   // scrap payout, or a quality readout) under the item's normal label.
-  buildItemCell(entry, onClick, extra, rare) {
+  // The item's own stat line — what it does, before any comparison.
+  itemStatLine(entry) {
+    if (entry.kind !== 'weapon') return entry.item.label;
+    const rangeLabel = isRangedWeapon(entry.item) ? 'Скор.' : 'Дист.';
+    return `Урон ${entry.item.damage} · КД ${entry.item.cooldown}с · ${rangeLabel} ${Math.round(entry.item.range)}`;
+  },
+
+  // `compare` is an optional [{label, dir}] list from compareGear()/
+  // compareWeapons() — already resolved against the slot this item would
+  // actually go into (see Player.slotOccupantFor). Rendered as coloured
+  // deltas so "is this better than what I'm wearing" is answerable at a
+  // glance instead of by reading two stat lines and doing the subtraction.
+  buildCompareRow(compare) {
+    const row = document.createElement('div');
+    row.className = 'item-compare';
+    if (compare.length === 0) {
+      const same = document.createElement('span');
+      same.className = 'cmp cmp-same';
+      same.textContent = 'то же самое';
+      row.appendChild(same);
+      return row;
+    }
+    for (const { label, dir } of compare) {
+      const chip = document.createElement('span');
+      chip.className = 'cmp ' + (dir > 0 ? 'cmp-up' : 'cmp-down');
+      chip.textContent = label;
+      row.appendChild(chip);
+    }
+    return row;
+  },
+
+  // `extra` is an optional second line (e.g. a scrap payout). `opts`:
+  // { compare, equipped, kindLabel } — all optional, so the scrapper's sell
+  // list can keep using the plain card while the inventory grid opts into
+  // the type line, the НАДЕТО badge and the comparison row.
+  buildItemCell(entry, onClick, extra, rare, opts = {}) {
+    const { compare = null, equipped = false, kindLabel = null } = opts;
     const cell = document.createElement('button');
-    cell.className = 'btn item-cell' + (rare ? ' item-cell-rare' : '');
+    cell.className = 'btn item-cell' + (rare ? ' item-cell-rare' : '') + (equipped ? ' item-cell-equipped' : '');
     cell.title = entry.kind === 'weapon' ? describeWeaponFull(entry.item) : describeItemFull(entry.item);
 
     cell.appendChild(this.buildItemIconBox(entry, rare, false));
@@ -464,18 +500,33 @@ const HUD = {
     const text = document.createElement('div');
     text.className = 'item-cell-text';
 
+    const nameRow = document.createElement('div');
+    nameRow.className = 'item-name-row';
     const name = document.createElement('div');
     name.className = 'item-name';
     name.textContent = entry.item.name;
+    nameRow.appendChild(name);
+    if (equipped) {
+      const badge = document.createElement('span');
+      badge.className = 'item-worn-badge';
+      badge.textContent = 'НАДЕТО';
+      nameRow.appendChild(badge);
+    }
+    text.appendChild(nameRow);
+
+    if (kindLabel) {
+      const kind = document.createElement('div');
+      kind.className = 'item-kind';
+      kind.textContent = kindLabel;
+      text.appendChild(kind);
+    }
 
     const label = document.createElement('div');
     label.className = 'item-extra';
-    label.textContent = entry.kind === 'weapon'
-      ? `Урон ${entry.item.damage} · КД ${entry.item.cooldown}с · Дист. ${Math.round(entry.item.range)}`
-      : entry.item.label;
-
-    text.appendChild(name);
+    label.textContent = this.itemStatLine(entry);
     text.appendChild(label);
+
+    if (compare) text.appendChild(this.buildCompareRow(compare));
 
     if (extra) {
       const extraEl = document.createElement('div');
@@ -485,7 +536,8 @@ const HUD = {
     }
 
     cell.appendChild(text);
-    cell.addEventListener('click', () => onClick(entry));
+    if (onClick) cell.addEventListener('click', () => onClick(entry));
+    else cell.disabled = true;
     return cell;
   },
 
@@ -541,37 +593,44 @@ const HUD = {
     const slotsContainer = this.els.inventorySlots;
     slotsContainer.innerHTML = '';
 
-    // The two armament slots. Neither is clickable-to-unequip the way gear
-    // slots are: there's always exactly one melee weapon and one bow
-    // equipped, and swapping happens by clicking a different one in the grid
-    // below (see Player.manualEquipWeapon, which routes each to its own slot).
-    for (const [label, item] of [['Оружие', opts.weapon], ['Лук', opts.bow]]) {
+    // Every worn slot uses the SAME card as the bag below — same icon, same
+    // stat line, plus a НАДЕТО badge — so comparing what's on you against
+    // what's in the bag is reading two of one thing, not one of each.
+    //
+    // The two armament slots aren't clickable-to-unequip the way gear slots
+    // are: there's always exactly one melee weapon and one bow equipped, and
+    // swapping happens by clicking a different one in the grid below (see
+    // Player.manualEquipWeapon, which routes each to its own slot).
+    for (const item of [opts.weapon, opts.bow]) {
       const entry = { kind: 'weapon', item };
-      const cell = document.createElement('div');
-      cell.className = 'equip-slot-cell equip-slot-filled';
-      cell.appendChild(this.buildItemIconBox(entry, opts.isRare(entry), true));
-      const text = document.createElement('span');
-      text.textContent = `${label}: ${item.name}`;
-      cell.appendChild(text);
-      slotsContainer.appendChild(cell);
+      slotsContainer.appendChild(this.buildItemCell(entry, null, null, opts.isRare(entry), {
+        equipped: true,
+        kindLabel: describeWeaponKind(item),
+      }));
     }
 
     const slotLabels = { helm: 'Шлем', chest: 'Нагрудник', acc1: 'Аксессуар 1', acc2: 'Аксессуар 2', acc3: 'Аксессуар 3', acc4: 'Аксессуар 4' };
     const gearSlots = ['helm', 'chest', ...opts.accessorySlots];
     for (const slotKey of gearSlots) {
       const item = opts.equipment[slotKey];
-      const cell = document.createElement('button');
-      cell.className = 'btn equip-slot-cell' + (item ? ' equip-slot-filled' : ' equip-slot-empty');
-      if (item) {
-        const entry = { kind: 'gear', item };
-        cell.appendChild(this.buildItemIconBox(entry, opts.isRare(entry), true));
+      if (!item) {
+        // Empty slots stay a plain labelled placeholder: there's no item to
+        // build a card around, and the point of the row is to show the slot
+        // exists and is waiting to be filled.
+        const cell = document.createElement('button');
+        cell.className = 'btn equip-slot-cell equip-slot-empty';
+        const label = document.createElement('span');
+        label.textContent = `${slotLabels[slotKey]}: —`;
+        cell.appendChild(label);
+        cell.disabled = true;
+        slotsContainer.appendChild(cell);
+        continue;
       }
-      const label = document.createElement('span');
-      label.textContent = item ? `${slotLabels[slotKey]}: ${item.name}` : `${slotLabels[slotKey]}: —`;
-      cell.appendChild(label);
-      if (item) cell.addEventListener('click', () => opts.onUnequipSlot(slotKey));
-      else cell.disabled = true;
-      slotsContainer.appendChild(cell);
+      const entry = { kind: 'gear', item };
+      slotsContainer.appendChild(this.buildItemCell(entry, () => opts.onUnequipSlot(slotKey), null, opts.isRare(entry), {
+        equipped: true,
+        kindLabel: slotLabels[slotKey],
+      }));
     }
 
     const grid = this.els.inventoryGrid;
@@ -583,7 +642,10 @@ const HUD = {
       grid.appendChild(empty);
     }
     for (const entry of opts.items) {
-      grid.appendChild(this.buildItemCell(entry, opts.onEquip, null, opts.isRare(entry)));
+      grid.appendChild(this.buildItemCell(entry, opts.onEquip, null, opts.isRare(entry), {
+        compare: opts.compare(entry),
+        kindLabel: entry.kind === 'weapon' ? describeWeaponKind(entry.item) : describeGearKind(entry.item),
+      }));
     }
   },
 
