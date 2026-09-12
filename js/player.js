@@ -531,17 +531,12 @@ class Player {
       facing: this.facing,
     }, (lctx) => {
       if (skinImg) {
-        lctx.drawImage(skinImg, 0, 0, vw, vh);
         // Dash feedback has no dedicated art — a translucent tint over just
-        // the sprite's own opaque pixels (source-atop) keeps the same visual
-        // cue the old fillRect had without needing a second dash sprite.
-        if (this.isDashing) {
-          lctx.save();
-          lctx.globalCompositeOperation = 'source-atop';
-          lctx.fillStyle = 'rgba(232, 220, 160, 0.55)';
-          lctx.fillRect(0, 0, vw, vh);
-          lctx.restore();
-        }
+        // the sprite's own opaque pixels keeps the same visual cue the old
+        // fillRect had without needing a second dash sprite. Routed through
+        // drawSpriteTinted (spriteAnim.js) so it clips to the sprite's alpha
+        // instead of filling the whole bounding box.
+        drawSpriteTinted(lctx, skinImg, vw, vh, this.isDashing ? '#e8dca0' : null, 0.55);
       } else {
         this.drawFallbackBody(lctx, vw, vh);
       }

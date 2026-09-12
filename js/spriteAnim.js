@@ -24,6 +24,74 @@ const LAND_SQUASH_DURATION = 0.13;                   // s, decays back to normal
 
 const TELEGRAPH_SHAKE_AMPLITUDE = 1.5 * WORLD_SCALE; // px, random jitter while a boss telegraphs
 
+// --- Sprite tinting (hit flash, dash glow, Blairface's palette swap) -------
+//
+// Tinting "only the sprite's own pixels" needs `source-atop`, but that
+// operator composites against EVERYTHING already on the target canvas — and
+// every entity here draws straight onto the main canvas (the `lctx` handed to
+// draw() below is the main context with a transform applied, not a layer). So
+// the tint used to clip to the background instead of to the sprite, painting
+// a solid rectangle over the entity's whole bounding box: the hit-flash bug.
+//
+// The fix is to give `source-atop` a canvas where the sprite is the ONLY
+// content. One offscreen buffer, allocated lazily and reused for every
+// entity in the game — it only ever grows to fit the largest sprite drawn so
+// far, so there is no per-frame allocation and no per-entity canvas.
+let tintBuffer = null;
+let tintBufferCtx = null;
+
+function ensureTintBuffer(w, h) {
+  if (!tintBuffer) {
+    tintBuffer = document.createElement('canvas');
+    tintBufferCtx = tintBuffer.getContext('2d');
+  }
+  // Resizing clears the canvas, so only do it when genuinely too small.
+  if (tintBuffer.width < w || tintBuffer.height < h) {
+    tintBuffer.width = Math.max(tintBuffer.width, Math.ceil(w));
+    tintBuffer.height = Math.max(tintBuffer.height, Math.ceil(h));
+  }
+  return tintBufferCtx;
+}
+
+// Draws `img` into the caller's current transform at (0,0,dw,dh) — the box
+// every entity's draw() already works in — with `color` laid over the
+// sprite's own opaque pixels only. `src` is an optional {sx,sy,sw,sh}
+// sub-rectangle for strip-based sprites (the Bat's animation frames).
+// Falls back to a plain drawImage if there's nothing to tint, so callers can
+// use it unconditionally.
+function drawSpriteTinted(ctx, img, dw, dh, color, alpha, src) {
+  const drawSprite = (target, w, h) => {
+    if (src) target.drawImage(img, src.sx, src.sy, src.sw, src.sh, 0, 0, w, h);
+    else target.drawImage(img, 0, 0, w, h);
+  };
+
+  if (!color || alpha <= 0) {
+    drawSprite(ctx, dw, dh);
+    return;
+  }
+
+  // Round up: a fractional buffer size would clip the sprite's last column.
+  const bw = Math.ceil(dw);
+  const bh = Math.ceil(dh);
+  const buf = ensureTintBuffer(bw, bh);
+
+  // Only the region we're about to use — clearing the whole (possibly much
+  // larger) buffer every call would waste fill on sprites that never touch it.
+  buf.clearRect(0, 0, bw, bh);
+  buf.save();
+  drawSprite(buf, dw, dh);
+  // Inside the buffer the sprite is the only content, so source-atop now
+  // clips to its alpha — transparent pixels stay transparent.
+  buf.globalCompositeOperation = 'source-atop';
+  buf.globalAlpha = alpha;
+  buf.fillStyle = color;
+  buf.fillRect(0, 0, bw, bh);
+  buf.restore();
+
+  // Blit under the caller's transform, so rotation/scale/flip still apply.
+  ctx.drawImage(tintBuffer, 0, 0, bw, bh, 0, 0, dw, dh);
+}
+
 class SpriteAnimator {
   constructor() {
     this.walkPhase = 0;

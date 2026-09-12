@@ -149,15 +149,10 @@ class GloriousGone {
       facing: this.dir,
     }, (lctx) => {
       if (img) {
-        lctx.drawImage(img, 0, 0, vw, vh);
-        if (this.hitFlash > 0) {
-          lctx.save();
-          lctx.globalCompositeOperation = 'source-atop';
-          lctx.globalAlpha = 0.6;
-          lctx.fillStyle = '#e8a0a0';
-          lctx.fillRect(0, 0, vw, vh);
-          lctx.restore();
-        }
+        // Tint follows the sprite's own alpha, not its bounding box — see
+        // drawSpriteTinted() in spriteAnim.js for why this can't just be a
+        // source-atop fillRect on the main canvas.
+        drawSpriteTinted(lctx, img, vw, vh, this.hitFlash > 0 ? '#e8a0a0' : null, 0.6);
       } else {
         lctx.fillStyle = this.hitFlash > 0 ? '#e8a0a0' : '#6b5a4a';
         lctx.fillRect(0, 0, vw, vh);
@@ -428,15 +423,10 @@ class Bat {
     if (flip) { ctx.translate(vw, 0); ctx.scale(-1, 1); }
 
     if (img) {
-      ctx.drawImage(img, this.animFrame * BAT_FRAME_W, 0, BAT_FRAME_W, BAT_FRAME_H, 0, 0, vw, vh);
-      if (this.hitFlash > 0) {
-        ctx.save();
-        ctx.globalCompositeOperation = 'source-atop';
-        ctx.globalAlpha = 0.6;
-        ctx.fillStyle = '#e8a0a0';
-        ctx.fillRect(0, 0, vw, vh);
-        ctx.restore();
-      }
+      // Strip-based sprite, so the tint helper gets the frame's sub-rect —
+      // same alpha-accurate path every other entity uses.
+      drawSpriteTinted(ctx, img, vw, vh, this.hitFlash > 0 ? '#e8a0a0' : null, 0.6,
+        { sx: this.animFrame * BAT_FRAME_W, sy: 0, sw: BAT_FRAME_W, sh: BAT_FRAME_H });
     } else {
       ctx.fillStyle = this.hitFlash > 0 ? '#e8a0a0' : '#4a4a5e';
       ctx.fillRect(0, 0, vw, vh);

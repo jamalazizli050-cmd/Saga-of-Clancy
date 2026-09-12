@@ -117,18 +117,13 @@ class BossBase {
       shaking,
     }, (lctx) => {
       if (img) {
-        lctx.drawImage(img, 0, 0, vw, vh);
         // Tinted fairly strongly (not a subtle hint like the player's dash
         // flash) because these colors are gameplay state, not decoration —
         // hit-flash timing, Sakarver's self-damage cue, Keons' smoke state,
         // Vetomo's charge-up all need to stay as readable as they were as
-        // flat rectangles.
-        lctx.save();
-        lctx.globalCompositeOperation = 'source-atop';
-        lctx.globalAlpha = 0.7;
-        lctx.fillStyle = fill;
-        lctx.fillRect(0, 0, vw, vh);
-        lctx.restore();
+        // flat rectangles. Clipped to the sprite's own alpha by
+        // drawSpriteTinted (spriteAnim.js) rather than its bounding box.
+        drawSpriteTinted(lctx, img, vw, vh, fill, 0.7);
       } else {
         lctx.fillStyle = fill;
         lctx.fillRect(0, 0, vw, vh);
@@ -1026,15 +1021,7 @@ class MirrorBoss extends BossBase {
       shaking: telegraphing,
     }, (lctx) => {
       if (skinImg) {
-        lctx.drawImage(skinImg, 0, 0, vw, vh);
-        if (tintColor) {
-          lctx.save();
-          lctx.globalCompositeOperation = 'source-atop';
-          lctx.globalAlpha = tintAlpha;
-          lctx.fillStyle = tintColor;
-          lctx.fillRect(0, 0, vw, vh);
-          lctx.restore();
-        }
+        drawSpriteTinted(lctx, skinImg, vw, vh, tintColor, tintAlpha);
       } else {
         // Fallback: no heir skin available (skinId-less "Ты", or the image
         // never loaded) — the original flat-rectangle rendering, unchanged.
